@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Granite Trader V0.2</title>
+  <style>
+    :root {
+      --bg:#0b0f14;
+      --panel:#111821;
+      --panel2:#18222e;
+      --line:#243040;
+      --line2:#324253;
+      --text:#d7dde7;
+      --muted:#9fb1c3;
+      --accent:#8fb5ff;
+      --danger:#ff7b72;
+      --ok:#63c37d;
+      --warn:#d9b96e;
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:Arial,sans-serif; }
+    .app { display:grid; grid-template-rows:auto auto 1fr auto; min-height:100vh; }
+    .topbar {
+      padding:12px 16px;
+      border-bottom:1px solid var(--line);
+      background:var(--panel);
+      display:flex;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+    .metric {
+      background:var(--panel2);
+      border:1px solid var(--line);
+      border-radius:8px;
+      padding:10px 12px;
+      min-width:150px;
+    }
+    .small { color:var(--muted); font-size:12px; margin-bottom:4px; }
+    .controls {
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      padding:12px 16px;
+      border-bottom:1px solid var(--line);
+      background:#0f151d;
+      align-items:end;
+    }
+    select,input,button {
+      background:var(--panel2);
+      color:var(--text);
+      border:1px solid var(--line2);
+      border-radius:8px;
+      padding:8px 10px;
+    }
+    button { cursor:pointer; }
+    .main {
+      display:grid;
+      grid-template-columns:56% 44%;
+      min-height:0;
+    }
+    .panel { border-right:1px solid var(--line); overflow:auto; }
+    .panel:last-child { border-right:none; }
+    .panel h2 {
+      margin:0;
+      padding:12px 16px;
+      font-size:16px;
+      border-bottom:1px solid var(--line);
+      background:var(--panel);
+    }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td {
+      border-bottom:1px solid #1f2a36;
+      padding:8px 10px;
+      text-align:left;
+      white-space:nowrap;
+    }
+    thead th {
+      position:sticky;
+      top:0;
+      background:#16202b;
+      z-index:1;
+    }
+    tbody tr:hover { background:#15202a; }
+    .group-row { background:#101821; color:var(--accent); font-weight:bold; }
+    .totals-bar {
+      position:sticky;
+      bottom:0;
+      background:var(--panel);
+      border-top:1px solid var(--line);
+      padding:10px 16px;
+      display:flex;
+      gap:18px;
+      flex-wrap:wrap;
+      font-size:13px;
+    }
+    .error { color:var(--danger); padding:12px 16px; }
+    .section {
+      padding:12px 16px;
+      border-bottom:1px solid var(--line);
+      background:#0f151d;
+    }
+    .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .grid4 { display:grid; grid-template-columns:repeat(4, minmax(120px, 1fr)); gap:10px; margin-top:10px; }
+    .quote-cell {
+      background:var(--panel2);
+      border:1px solid var(--line);
+      border-radius:8px;
+      padding:8px 10px;
+    }
+    .pill {
+      display:inline-block;
+      padding:4px 8px;
+      border-radius:999px;
+      border:1px solid var(--line2);
+      color:var(--muted);
+      font-size:12px;
+    }
+    .ok { color:var(--ok); }
+    .subpanel-title {
+      margin:0 0 10px 0;
+      color:var(--accent);
+      font-size:14px;
+      font-weight:bold;
+    }
+    .vol-wrap {
+      overflow:auto;
+      border:1px solid var(--line);
+      border-radius:8px;
+      background:#0f151d;
+    }
+    .vol-table {
+      width:max-content;
+      min-width:100%;
+      border-collapse:collapse;
+      font-size:12px;
+    }
+    .vol-table th,
+    .vol-table td {
+      padding:6px 8px;
+      text-align:center;
+      border-bottom:1px solid #1f2a36;
+      border-right:1px solid #1f2a36;
+    }
+    .vol-table thead th {
+      position:sticky;
+      top:0;
+      background:#16202b;
+      z-index:1;
+    }
+    .legend {
+      display:flex;
+      gap:12px;
+      align-items:center;
+      flex-wrap:wrap;
+      font-size:12px;
+      color:var(--muted);
+      margin-top:10px;
+    }
+    .swatch {
+      width:16px;
+      height:16px;
+      border-radius:4px;
+      display:inline-block;
+      border:1px solid rgba(255,255,255,0.1);
+      vertical-align:middle;
+      margin-right:6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar" id="metrics"></div>
+
+    <div class="controls">
+      <label>Account Source
+        <select id="accountSource">
+          <option value="mock">Mock</option>
+          <option value="tasty">tasty live</option>
+        </select>
+      </label>
+
+      <label>Scan Symbol
+        <input id="scanSymbol" type="text" value="SPY" />
+      </label>
+
+      <label>Total Risk
+        <input id="totalRisk" type="number" value="600" step="100" />
+      </label>
+
+      <label>Scan Side
+        <select id="scanSide">
+          <option value="all">all</option>
+          <option value="call">call</option>
+          <option value="put">put</option>
+        </select>
+      </label>
+
+      <label>Expiration
+        <select id="scanExpiration">
+          <option value="all">all</option>
+        </select>
+      </label>
+
+      <label>Sort By
+        <select id="scanSort">
+          <option value="credit_pct_risk">credit % risk</option>
+          <option value="credit">net credit</option>
+          <option value="limit_impact">limit impact</option>
+          <option value="richness">richness score</option>
+        </select>
+      </label>
+
+      <label>Max Results
+        <input id="maxResults" type="number" value="100" min="1" max="500" step="10" />
+      </label>
+
+      <label>Alert Symbol
+        <input id="quoteSymbol" type="text" value="SPY" />
+      </label>
+
+      <label>Alert Move $
+        <input id="quoteThreshold" type="number" value="1.00" step="0.10" />
+      </label>
+
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input id="whatsappToggle" type="checkbox" />
+        WhatsApp alerts
+      </label>
+
+      <button id="reloadBtn">Reload</button>
+      <button id="quoteBtn">Get Quote</button>
+      <button id="notifyBtn">Enable Desktop Alerts</button>
+    </div>
+
+    <div class="main">
+      <div class="panel">
+        <h2>Open Positions</h2>
+        <div id="positionsError" class="error"></div>
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Underlying</th>
+              <th>Group</th>
+              <th>Qty</th>
+              <th>Type</th>
+              <th>Exp</th>
+              <th>Strike</th>
+              <th>Mark</th>
+              <th>Trade</th>
+              <th>P/L Open</th>
+              <th>Short Value</th>
+              <th>Long Cost</th>
+              <th>Impact</th>
+            </tr>
+          </thead>
+          <tbody id="positionsTable"></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Market + Alerts + Live Scanner + Vol Surface</h2>
+
+        <div class="section">
+          <div class="grid2">
+            <div><span class="pill" id="desktopStatus">Desktop alerts: off</span></div>
+            <div><span class="pill" id="whatsappStatus">WhatsApp alerts: optional</span></div>
+          </div>
+          <div id="quoteError" class="error"></div>
+          <div id="quoteResult" class="grid4"></div>
+        </div>
+
+        <div class="section">
+          <div class="subpanel-title">Live Credit Spread Scanner</div>
+          <div id="scanError" class="error"></div>
+          <table>
+            <thead>
+              <tr>
+                <th>Exp</th>
+                <th>Side</th>
+                <th>Short</th>
+                <th>Long</th>
+                <th>Width</th>
+                <th>Qty</th>
+                <th>Risk</th>
+                <th>Net Credit</th>
+                <th>Credit % Risk</th>
+                <th>Short Δ</th>
+                <th>Short IV</th>
+                <th>Richness</th>
+                <th>Impact</th>
+              </tr>
+            </thead>
+            <tbody id="scanTable"></tbody>
+          </table>
+        </div>
+
+        <div class="section">
+          <div class="subpanel-title">Volatility Surface — nearest 7 expirations</div>
+          <div id="volError" class="error"></div>
+          <div id="volSummary" class="grid4"></div>
+          <div id="volSurface"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="totals-bar" id="totalsBar">
+      <div>Selected Legs: 0</div>
+      <div>Selected Short Value: 0</div>
+      <div>Selected Long Cost: 0</div>
+      <div>Selected P/L Open: 0</div>
+      <div>Selected Limit Impact: 0</div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = "http://localhost:8000";
+
+    let currentPositions = [];
+    let selectedIds = new Set();
+    let refreshTimer = null;
+    let desktopAllowed = false;
+    let lastQuote = null;
+
+    async function fetchJson(url, options = {}) {
+      const resp = await fetch(url, options);
+      const text = await resp.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (e) {
+        data = { detail: text };
+      }
+      if (!resp.ok) {
+        throw new Error(data.detail || `Request failed: ${resp.status}`);
+      }
+      return data;
+    }
+
+    function money(v) {
+      if (v === null || v === undefined || v === "") return "-";
+      return Number(v).toFixed(2);
+    }
+
+    function pct(v) {
+      if (v === null || v === undefined || v === "") return "-";
+      return `${(Number(v) * 100).toFixed(2)}%`;
+    }
+
+    function fixed(v, digits = 4) {
+      if (v === null || v === undefined || v === "") return "-";
+      return Number(v).toFixed(digits);
+    }
+
+    function renderMetrics(limitSummary, source) {
+      document.getElementById("metrics").innerHTML = `
+        <div class="metric"><div class="small">Source</div><div>${source}</div></div>
+        <div class="metric"><div class="small">Net Liq</div><div>${money(limitSummary.net_liq)}</div></div>
+        <div class="metric"><div class="small">Net Liq × 25</div><div>${money(limitSummary.max_limit)}</div></div>
+        <div class="metric"><div class="small">Used Short Value</div><div>${money(limitSummary.used_short_value)}</div></div>
+        <div class="metric"><div class="small">Remaining Room</div><div>${money(limitSummary.remaining_room)}</div></div>
+        <div class="metric"><div class="small">Used %</div><div>${(Number(limitSummary.used_pct || 0) * 100).toFixed(2)}%</div></div>
+      `;
+    }
+
+    function renderPositions(positions) {
+      const tbody = document.getElementById("positionsTable");
+      const groups = {};
+      positions.forEach(p => {
+        const key = `${p.underlying}||${p.group}`;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(p);
+      });
+
+      let html = "";
+      Object.entries(groups).forEach(([key, rows]) => {
+        const [underlying, group] = key.split("||");
+        html += `<tr class="group-row"><td colspan="13">${underlying} — ${group}</td></tr>`;
+        rows.forEach(row => {
+          const checked = selectedIds.has(row.id) ? "checked" : "";
+          html += `
+            <tr>
+              <td><input type="checkbox" data-id="${row.id}" ${checked}></td>
+              <td>${row.underlying}</td>
+              <td>${row.group}</td>
+              <td>${row.display_qty}</td>
+              <td>${row.option_type}</td>
+              <td>${row.expiration}</td>
+              <td>${row.strike}</td>
+              <td>${money(row.mark)}</td>
+              <td>${money(row.trade_price)}</td>
+              <td>${money(row.pnl_open)}</td>
+              <td>${money(row.short_value)}</td>
+              <td>${money(row.long_cost)}</td>
+              <td>${money(row.limit_impact)}</td>
+            </tr>
+          `;
+        });
+      });
+
+      tbody.innerHTML = html;
+      tbody.querySelectorAll("input[type=checkbox]").forEach(box => {
+        box.addEventListener("change", async (e) => {
+          const id = e.target.getAttribute("data-id");
+          if (e.target.checked) selectedIds.add(id);
+          else selectedIds.delete(id);
+          await refreshTotals();
+        });
+      });
+    }
+
+    async function refreshTotals() {
+      const selectedRows = currentPositions.filter(p => selectedIds.has(p.id));
+      const totals = await fetchJson(`${API_BASE}/totals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: selectedRows })
+      });
+
+      document.getElementById("totalsBar").innerHTML = `
+        <div>Selected Legs: ${totals.selected_legs}</div>
+        <div>Selected Short Value: ${money(totals.selected_short_value)}</div>
+        <div>Selected Long Cost: ${money(totals.selected_long_cost)}</div>
+        <div>Selected P/L Open: ${money(totals.selected_pnl_open)}</div>
+        <div>Selected Limit Impact: ${money(totals.selected_limit_impact)}</div>
+      `;
+    }
+
+    function renderScan(items) {
+      document.getElementById("scanTable").innerHTML = items.map(item => `
+        <tr>
+          <td>${item.expiration ?? "-"}</td>
+          <td>${item.option_side ?? "-"}</td>
+          <td>${item.short_strike ?? "-"}</td>
+          <td>${item.long_strike ?? "-"}</td>
+          <td>${item.width ?? "-"}</td>
+          <td>${item.quantity ?? "-"}</td>
+          <td>${money(item.defined_risk)}</td>
+          <td>${money(item.net_credit)}</td>
+          <td>${pct(item.credit_pct_risk)}</td>
+          <td>${fixed(item.short_delta, 3)}</td>
+          <td>${fixed(item.short_iv, 4)}</td>
+          <td>${fixed(item.richness_score, 4)}</td>
+          <td>${money(item.limit_impact)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderQuote(raw) {
+      const key = Object.keys(raw)[0];
+      const item = raw[key] || {};
+      const quote = item.quote || {};
+
+      document.getElementById("quoteResult").innerHTML = `
+        <div class="quote-cell"><div class="small">Symbol</div><div>${key || "-"}</div></div>
+        <div class="quote-cell"><div class="small">Bid</div><div>${money(quote.bidPrice)}</div></div>
+        <div class="quote-cell"><div class="small">Ask</div><div>${money(quote.askPrice)}</div></div>
+        <div class="quote-cell"><div class="small">Last</div><div>${money(quote.lastPrice)}</div></div>
+        <div class="quote-cell"><div class="small">Mark</div><div>${money(quote.mark)}</div></div>
+        <div class="quote-cell"><div class="small">Close</div><div>${money(quote.closePrice)}</div></div>
+        <div class="quote-cell"><div class="small">Net Change</div><div>${money(quote.netChange)}</div></div>
+        <div class="quote-cell"><div class="small">% Change</div><div>${quote.netPercentChange ?? "-"}</div></div>
+      `;
+
+      return {
+        symbol: key,
+        last: quote.lastPrice ?? quote.mark ?? quote.closePrice ?? null
+      };
+    }
+
+    async function maybeAlert(symbol, newQuote) {
+      if (!newQuote || newQuote.last === null || lastQuote === null || lastQuote.last === null) {
+        lastQuote = newQuote;
+        return;
+      }
+
+      if (symbol !== lastQuote.symbol) {
+        lastQuote = newQuote;
+        return;
+      }
+
+      const threshold = Number(document.getElementById("quoteThreshold").value || "1.0");
+      const delta = Number(newQuote.last) - Number(lastQuote.last);
+
+      if (Math.abs(delta) >= threshold) {
+        const title = `${symbol} moved ${delta > 0 ? "+" : ""}${delta.toFixed(2)}`;
+        const message = `Last: ${Number(newQuote.last).toFixed(2)} | Prior: ${Number(lastQuote.last).toFixed(2)}`;
+
+        if (desktopAllowed && "Notification" in window) {
+          new Notification(title, { body: message });
+        }
+
+        try {
+          await fetchJson(`${API_BASE}/alerts/send`, {
+            method:"POST",
+            headers:{ "Content-Type":"application/json" },
+            body: JSON.stringify({
+              title,
+              message,
+              notify_whatsapp: document.getElementById("whatsappToggle").checked
+            })
+          });
+        } catch (e) {}
+      }
+
+      lastQuote = newQuote;
+    }
+
+    function colorForIv(value, min, max) {
+      if (value === null || value === undefined) return "transparent";
+      if (max === min) return "rgba(143,181,255,0.35)";
+
+      const ratio = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      const red = Math.round(50 + ratio * 170);
+      const green = Math.round(75 + (1 - ratio) * 90);
+      const blue = Math.round(120 + (1 - ratio) * 80);
+      return `rgba(${red}, ${green}, ${blue}, 0.55)`;
+    }
+
+    function renderVolSurface(payload) {
+      const volSummary = document.getElementById("volSummary");
+      const volSurface = document.getElementById("volSurface");
+
+      const expirations = payload.expirations || [];
+      const strikes = payload.strikes || [];
+      const matrix = payload.iv_matrix || [];
+      const richness = payload.richness_scores || {};
+      const underlyingPrice = payload.underlying_price;
+
+      volSummary.innerHTML = `
+        <div class="quote-cell"><div class="small">Symbol</div><div>${payload.symbol || "-"}</div></div>
+        <div class="quote-cell"><div class="small">Underlying</div><div>${money(underlyingPrice)}</div></div>
+        <div class="quote-cell"><div class="small">Expirations</div><div>${expirations.length}</div></div>
+        <div class="quote-cell"><div class="small">Selection Rule</div><div>${payload.selection_rule || "-"}</div></div>
+      `;
+
+      if (!expirations.length || !strikes.length || !matrix.length) {
+        volSurface.innerHTML = `<div class="small">No volatility surface data available.</div>`;
+        return;
+      }
+
+      const flat = matrix.flat().filter(v => v !== null && v !== undefined);
+      const minIv = flat.length ? Math.min(...flat) : 0;
+      const maxIv = flat.length ? Math.max(...flat) : 1;
+
+      let html = `<div class="vol-wrap"><table class="vol-table"><thead><tr><th>Exp \\ Strike</th>`;
+      html += strikes.map(s => `<th>${Number(s).toFixed(2)}</th>`).join("");
+      html += `</tr></thead><tbody>`;
+
+      expirations.forEach((exp, rowIdx) => {
+        html += `<tr><th>${exp}</th>`;
+        strikes.forEach((strike, colIdx) => {
+          const iv = matrix[rowIdx]?.[colIdx] ?? null;
+          const bg = colorForIv(iv, minIv, maxIv);
+          html += `<td style="background:${bg}">${iv === null ? "-" : Number(iv).toFixed(4)}</td>`;
+        });
+        html += `</tr>`;
+      });
+
+      html += `</tbody></table></div>`;
+
+      const richest = Object.entries(richness)
+        .map(([exp, data]) => ({ exp, score: data?.richness_score ?? null, avgIv: data?.avg_iv ?? null }))
+        .filter(x => x.score !== null)
+        .sort((a, b) => Number(b.score) - Number(a.score))
+        .slice(0, 3);
+
+      html += `<div class="legend">
+        <span><span class="swatch" style="background:rgba(50,165,200,.45)"></span>Lower IV</span>
+        <span><span class="swatch" style="background:rgba(220,100,120,.55)"></span>Higher IV</span>
+        <span>Nearest 7 expirations are used regardless of daily/weekly/monthly/quarterly type.</span>
+      </div>`;
+
+      if (richest.length) {
+        html += `<div style="margin-top:10px" class="small"><strong style="color:var(--warn)">Richer expirations by surface score:</strong> `;
+        html += richest.map(x => `${x.exp} (score ${Number(x.score).toFixed(4)}, avg IV ${Number(x.avgIv).toFixed(4)})`).join(" • ");
+        html += `</div>`;
+      }
+
+      volSurface.innerHTML = html;
+    }
+
+    async function populateExpirationFilter(symbol) {
+      try {
+        const data = await fetchJson(`${API_BASE}/chain?symbol=${encodeURIComponent(symbol)}&strike_count=25`);
+        const expSelect = document.getElementById("scanExpiration");
+        const expirations = data.expirations || [];
+        const current = expSelect.value || "all";
+        expSelect.innerHTML = `<option value="all">all</option>` + expirations.slice(0, 30).map(exp => `<option value="${exp}">${exp}</option>`).join("");
+        if ([...expSelect.options].some(opt => opt.value === current)) {
+          expSelect.value = current;
+        }
+      } catch (err) {
+      }
+    }
+
+    async function loadAccount() {
+      document.getElementById("positionsError").textContent = "";
+      const endpoint = document.getElementById("accountSource").value === "tasty" ? "/account/tasty" : "/account/mock";
+      const data = await fetchJson(`${API_BASE}${endpoint}`);
+      currentPositions = data.positions || [];
+      renderMetrics(data.limit_summary, data.source);
+      renderPositions(currentPositions);
+      await refreshTotals();
+    }
+
+    async function loadScan() {
+      document.getElementById("scanError").textContent = "";
+      const symbol = document.getElementById("scanSymbol").value.trim().toUpperCase() || "SPY";
+      const qs = new URLSearchParams({
+        symbol,
+        total_risk: document.getElementById("totalRisk").value || "600",
+        side: document.getElementById("scanSide").value,
+        expiration: document.getElementById("scanExpiration").value,
+        sort_by: document.getElementById("scanSort").value,
+        strike_count: "25",
+        max_results: document.getElementById("maxResults").value || "100",
+      });
+
+      const data = await fetchJson(`${API_BASE}/scan/live?${qs.toString()}`);
+      renderScan(data.items || []);
+    }
+
+    async function loadQuote() {
+      document.getElementById("quoteError").textContent = "";
+      const symbol = document.getElementById("quoteSymbol").value.trim().toUpperCase();
+      if (!symbol) return;
+      const data = await fetchJson(`${API_BASE}/quote/schwab?symbol=${encodeURIComponent(symbol)}`);
+      const q = renderQuote(data);
+      await maybeAlert(symbol, q);
+    }
+
+    async function loadVolSurface() {
+      document.getElementById("volError").textContent = "";
+      const symbol = document.getElementById("scanSymbol").value.trim().toUpperCase() || "SPY";
+      const data = await fetchJson(`${API_BASE}/vol/surface?symbol=${encodeURIComponent(symbol)}&max_expirations=7&strike_count=21`);
+      renderVolSurface(data);
+    }
+
+    async function reloadAll() {
+      const scanSymbol = document.getElementById("scanSymbol").value.trim().toUpperCase() || "SPY";
+      try {
+        await populateExpirationFilter(scanSymbol);
+      } catch (err) {}
+
+      try {
+        await loadAccount();
+      } catch (err) {
+        document.getElementById("positionsError").textContent = err.message;
+      }
+
+      try {
+        await loadScan();
+      } catch (err) {
+        document.getElementById("scanError").textContent = err.message;
+      }
+
+      try {
+        await loadVolSurface();
+      } catch (err) {
+        document.getElementById("volError").textContent = err.message;
+      }
+
+      try {
+        await loadQuote();
+      } catch (err) {
+        document.getElementById("quoteError").textContent = err.message;
+      }
+    }
+
+    function startAutoRefresh() {
+      if (refreshTimer) clearInterval(refreshTimer);
+      refreshTimer = setInterval(async () => {
+        await reloadAll();
+      }, 15000);
+    }
+
+    async function enableDesktopAlerts() {
+      if (!("Notification" in window)) {
+        document.getElementById("desktopStatus").textContent = "Desktop alerts: unsupported";
+        return;
+      }
+      const result = await Notification.requestPermission();
+      desktopAllowed = result === "granted";
+      document.getElementById("desktopStatus").textContent = desktopAllowed ? "Desktop alerts: on" : "Desktop alerts: blocked";
+      document.getElementById("desktopStatus").className = desktopAllowed ? "pill ok" : "pill";
+    }
+
+    document.getElementById("reloadBtn").addEventListener("click", reloadAll);
+    document.getElementById("quoteBtn").addEventListener("click", async () => {
+      try {
+        await loadQuote();
+      } catch (err) {
+        document.getElementById("quoteError").textContent = err.message;
+      }
+    });
+    document.getElementById("notifyBtn").addEventListener("click", enableDesktopAlerts);
+
+    document.getElementById("scanSymbol").addEventListener("change", reloadAll);
+    document.getElementById("scanSide").addEventListener("change", loadScan);
+    document.getElementById("scanExpiration").addEventListener("change", loadScan);
+    document.getElementById("scanSort").addEventListener("change", loadScan);
+
+    reloadAll();
+    startAutoRefresh();
+  </script>
+</body>
+</html>

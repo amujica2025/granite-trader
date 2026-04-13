@@ -5,3 +5,4 @@ __pycache__/
 *.log
 venv/
 node_modules/
+backend/schwab_token.json

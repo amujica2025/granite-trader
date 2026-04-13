@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from limit_engine import compute_credit_pct_risk
 from schwab_adapter import get_flat_option_chain
 
 SUPPORTED_WIDTHS = [1.0, 2.0, 2.5, 5.0, 10.0]
@@ -93,21 +92,31 @@ def _percentile_ranks(items: List[float]) -> List[float]:
         return []
     if len(items) == 1:
         return [1.0]
+
     ordered = sorted((value, idx) for idx, value in enumerate(items))
     ranks = [0.0] * len(items)
+
     for rank, (_, idx) in enumerate(ordered):
         ranks[idx] = rank / (len(items) - 1)
+
     return ranks
 
 
 def _sort_candidates(items: List[Dict[str, Any]], ranking: str) -> List[Dict[str, Any]]:
     ranking = ranking.lower().strip()
+
     if ranking == "credit":
         return sorted(items, key=lambda x: x["net_credit"], reverse=True)
+
     if ranking == "credit_pct_risk":
         return sorted(items, key=lambda x: x["credit_pct_risk"], reverse=True)
+
     if ranking == "limit_impact":
         return sorted(items, key=lambda x: (x["limit_impact"], -x["credit_pct_risk"]))
+
+    if ranking == "max_loss":
+        return sorted(items, key=lambda x: (x["max_loss"], -x["credit_pct_risk"]))
+
     return sorted(items, key=lambda x: x["richness_score"], reverse=True)
 
 
@@ -163,12 +172,22 @@ def _build_spread_candidates_for_expiration(
             if net_credit_per_spread <= 0:
                 continue
 
-            defined_risk = width * 100.0 * quantity
+            gross_defined_risk = width * 100.0 * quantity
             short_value = short_fill * 100.0 * quantity
             long_cost = long_fill * 100.0 * quantity
             net_credit = net_credit_per_spread * quantity
+            max_loss = gross_defined_risk - net_credit
             limit_impact = max(short_value, long_cost)
-            credit_pct_risk = compute_credit_pct_risk(net_credit, defined_risk)
+
+            # Keep your original metric exactly as requested:
+            # credit received as % of gross defined risk
+            credit_pct_risk = net_credit / gross_defined_risk if gross_defined_risk > 0 else 0.0
+
+            # Add actual max loss as a separate field.
+            # Allow negative values to remain visible if they occur from the pricing model / chain shape.
+            reward_to_max_loss = None
+            if abs(max_loss) > 1e-12:
+                reward_to_max_loss = net_credit / max_loss
 
             results.append(
                 {
@@ -180,7 +199,9 @@ def _build_spread_candidates_for_expiration(
                     "long_strike": round(long_strike, 4),
                     "width": round(width, 4),
                     "quantity": quantity,
-                    "defined_risk": round(defined_risk, 2),
+                    "defined_risk": round(gross_defined_risk, 2),
+                    "gross_defined_risk": round(gross_defined_risk, 2),
+                    "max_loss": round(max_loss, 2),
                     "short_price": round(short_fill, 4),
                     "long_price": round(long_fill, 4),
                     "short_value": round(short_value, 2),
@@ -188,6 +209,8 @@ def _build_spread_candidates_for_expiration(
                     "net_credit": round(net_credit, 2),
                     "credit_pct_risk": round(credit_pct_risk, 6),
                     "credit_pct_risk_pct": round(credit_pct_risk * 100.0, 2),
+                    "reward_to_max_loss": round(reward_to_max_loss, 6) if reward_to_max_loss is not None else None,
+                    "reward_to_max_loss_pct": round(reward_to_max_loss * 100.0, 2) if reward_to_max_loss is not None else None,
                     "limit_impact": round(limit_impact, 2),
                     "short_delta": round(_safe_float(short_contract.get("delta")), 6),
                     "long_delta": round(_safe_float(long_contract.get("delta")), 6),
@@ -219,6 +242,7 @@ def _enrich_candidates(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for (_, _), group in grouped.items():
         credit_values = [item["credit_pct_risk"] for item in group]
         iv_values = [item["avg_iv"] for item in group]
+
         credit_ranks = _percentile_ranks(credit_values)
         iv_ranks = _percentile_ranks(iv_values)
 
@@ -271,10 +295,12 @@ def generate_risk_equivalent_candidates(
     for contract in all_contracts:
         expiration = contract["expiration"]
         option_side = contract["option_side"]
+
         if allowed_expirations and expiration not in allowed_expirations:
             continue
         if side_filter != "all" and option_side != side_filter:
             continue
+
         by_exp_and_side[(expiration, option_side)].append(contract)
 
     results: List[Dict[str, Any]] = []

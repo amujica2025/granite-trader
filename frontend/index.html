@@ -165,6 +165,13 @@
       vertical-align:middle;
       margin-right:6px;
     }
+    .negative {
+      color: var(--danger);
+      font-weight: bold;
+    }
+    .positive {
+      color: var(--ok);
+    }
   </style>
 </head>
 <body>
@@ -203,7 +210,7 @@
 
       <label>Sort By
         <select id="scanSort">
-          <option value="credit_pct_risk">credit % risk</option>
+          <option value="credit_pct_risk">credit % gross risk</option>
           <option value="credit">net credit</option>
           <option value="limit_impact">limit impact</option>
           <option value="richness">richness score</option>
@@ -282,9 +289,11 @@
                 <th>Long</th>
                 <th>Width</th>
                 <th>Qty</th>
-                <th>Risk</th>
+                <th>Gross Risk</th>
+                <th>Max Loss</th>
                 <th>Net Credit</th>
-                <th>Credit % Risk</th>
+                <th>Credit % Gross Risk</th>
+                <th>Reward / Max Loss</th>
                 <th>Short Δ</th>
                 <th>Short IV</th>
                 <th>Richness</th>
@@ -350,6 +359,11 @@
     function fixed(v, digits = 4) {
       if (v === null || v === undefined || v === "") return "-";
       return Number(v).toFixed(digits);
+    }
+
+    function metricClass(v) {
+      if (v === null || v === undefined || v === "") return "";
+      return Number(v) < 0 ? "negative" : "positive";
     }
 
     function renderMetrics(limitSummary, source) {
@@ -427,23 +441,29 @@
     }
 
     function renderScan(items) {
-      document.getElementById("scanTable").innerHTML = items.map(item => `
-        <tr>
-          <td>${item.expiration ?? "-"}</td>
-          <td>${item.option_side ?? "-"}</td>
-          <td>${item.short_strike ?? "-"}</td>
-          <td>${item.long_strike ?? "-"}</td>
-          <td>${item.width ?? "-"}</td>
-          <td>${item.quantity ?? "-"}</td>
-          <td>${money(item.defined_risk)}</td>
-          <td>${money(item.net_credit)}</td>
-          <td>${pct(item.credit_pct_risk)}</td>
-          <td>${fixed(item.short_delta, 3)}</td>
-          <td>${fixed(item.short_iv, 4)}</td>
-          <td>${fixed(item.richness_score, 4)}</td>
-          <td>${money(item.limit_impact)}</td>
-        </tr>
-      `).join("");
+      document.getElementById("scanTable").innerHTML = items.map(item => {
+        const maxLossClass = metricClass(item.max_loss);
+        const rewardClass = metricClass(item.reward_to_max_loss);
+        return `
+          <tr>
+            <td>${item.expiration ?? "-"}</td>
+            <td>${item.option_side ?? "-"}</td>
+            <td>${item.short_strike ?? "-"}</td>
+            <td>${item.long_strike ?? "-"}</td>
+            <td>${item.width ?? "-"}</td>
+            <td>${item.quantity ?? "-"}</td>
+            <td>${money(item.gross_defined_risk ?? item.defined_risk)}</td>
+            <td class="${maxLossClass}">${money(item.max_loss)}</td>
+            <td>${money(item.net_credit)}</td>
+            <td>${pct(item.credit_pct_risk)}</td>
+            <td class="${rewardClass}">${pct(item.reward_to_max_loss)}</td>
+            <td>${fixed(item.short_delta, 3)}</td>
+            <td>${fixed(item.short_iv, 4)}</td>
+            <td>${fixed(item.richness_score, 4)}</td>
+            <td>${money(item.limit_impact)}</td>
+          </tr>
+        `;
+      }).join("");
     }
 
     function renderQuote(raw) {

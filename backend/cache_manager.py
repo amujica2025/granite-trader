@@ -11,27 +11,15 @@ from market_clock import is_chain_refresh_window
 from schwab_adapter import get_quote, refresh_symbol_from_schwab
 from source_router import get_active_chain_source
 
-# ---------------------------------------------------------------------------
-# Config (overridable via .env)
-# ---------------------------------------------------------------------------
-
-CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "300"))          # 5 min default
-DEFAULT_STRIKE_COUNT = int(os.getenv("DEFAULT_CHAIN_STRIKE_COUNT", "200"))      # wide enough for 1-digit deltas
+CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "300"))
+DEFAULT_STRIKE_COUNT = int(os.getenv("DEFAULT_CHAIN_STRIKE_COUNT", "200"))
 DEFAULT_MAX_EXPIRATIONS = int(os.getenv("DEFAULT_MAX_EXPIRATIONS", "7"))
 
-
-# ---------------------------------------------------------------------------
-# Freshness check
-# ---------------------------------------------------------------------------
 
 def _state_is_fresh(state: Dict[str, Any], refresh_seconds: int) -> bool:
     last = float(state.get("last_chain_refresh_epoch", 0.0) or 0.0)
     return last > 0 and (time.time() - last) < refresh_seconds
 
-
-# ---------------------------------------------------------------------------
-# Read helpers (thin wrappers over the store)
-# ---------------------------------------------------------------------------
 
 def get_symbol_state(symbol: str) -> Dict[str, Any]:
     return store.get_symbol_state(symbol)
@@ -41,10 +29,6 @@ def list_cached_symbols() -> List[str]:
     return store.list_symbols()
 
 
-# ---------------------------------------------------------------------------
-# Core load / refresh
-# ---------------------------------------------------------------------------
-
 def ensure_symbol_loaded(
     symbol: str,
     force: bool = False,
@@ -53,25 +37,25 @@ def ensure_symbol_loaded(
     requested_by: str = "api",
 ) -> Dict[str, Any]:
     """
-    Return the normalized symbol state from the shared store.
+    Load/refresh symbol state from the appropriate source.
 
-    Decision tree:
-    1. If the cached state is fresh (< CHAIN_REFRESH_SECONDS old) and force=False â†’ return it.
-    2. If outside the chain-refresh window and source is Schwab and we have something â†’ return it.
-    3. Otherwise refresh from the active source (Schwab or Barchart).
-    4. Merge result into store and return.
-
-    This is the single entry point used by scanner.py, vol_surface.py, and all API endpoints.
+    Priority order:
+    1. Return fresh cache if available (< CHAIN_REFRESH_SECONDS old)
+    2. Return stale cache if outside refresh window and Schwab source
+    3. Fetch from Schwab (market hours) or Barchart (after hours)
+    4. KEY FIX: if Barchart returns no contracts, fall back to Schwab
+       This keeps scanner + vol surface alive after market hours until
+       actual Barchart chain JSON files are placed in data/barchart/chains/
     """
     symbol_upper = symbol.upper()
     existing = store.get_symbol_state(symbol_upper)
     active_source = get_active_chain_source()
 
-    # Return fresh cached data if we can
+    # Return cached data if fresh
     if not force and existing and _state_is_fresh(existing, CHAIN_REFRESH_SECONDS):
         return existing
 
-    # Outside chain-refresh window + Schwab source + we have something â†’ hold
+    # Outside refresh window + Schwab + have something â†’ hold
     if (
         not force
         and existing
@@ -80,7 +64,6 @@ def ensure_symbol_loaded(
     ):
         return existing
 
-    # --- Fetch fresh data ---
     if active_source == "schwab":
         payload = refresh_symbol_from_schwab(
             symbol=symbol_upper,
@@ -88,7 +71,7 @@ def ensure_symbol_loaded(
             max_expirations=max_expirations,
         )
     else:
-        # After-hours: try Schwab quote as a fallback price, use Barchart chain
+        # After-hours Barchart path
         fallback_quote: Dict[str, Any] = {}
         try:
             fallback_quote = get_quote(symbol_upper)
@@ -100,29 +83,42 @@ def ensure_symbol_loaded(
             fallback_quote_raw=fallback_quote,
         )
 
-        # If Barchart had no chain JSON, carry over the last Schwab contracts
-        if not payload.get("contracts") and existing:
-            payload["contracts"] = existing.get("contracts", [])
-            payload["expirations"] = existing.get("expirations", [])
-            payload["strikes"] = existing.get("strikes", [])
-            payload["underlying_price"] = existing.get("underlying_price")
-
-            # Merge watchlist fields on top of the last symbol_snapshot
-            merged_snapshot = dict(existing.get("symbol_snapshot", {}))
-            merged_snapshot.update(
-                {k: v for k, v in payload.get("symbol_snapshot", {}).items() if v is not None}
-            )
-            payload["symbol_snapshot"] = merged_snapshot
-            payload["metadata"] = {
-                **existing.get("metadata", {}),
-                **payload.get("metadata", {}),
-                "barchart_fallback_to_existing_chain": True,
-            }
+        # FALLBACK: Barchart has no chain JSON â†’ try Schwab anyway
+        if not payload.get("contracts"):
+            try:
+                schwab_payload = refresh_symbol_from_schwab(
+                    symbol=symbol_upper,
+                    strike_count=strike_count,
+                    max_expirations=max_expirations,
+                )
+                # Merge any Barchart watchlist fields on top of Schwab snapshot
+                merged_snap = dict(schwab_payload.get("symbol_snapshot", {}))
+                bc_snap = payload.get("symbol_snapshot", {})
+                merged_snap.update({k: v for k, v in bc_snap.items() if v is not None})
+                schwab_payload["symbol_snapshot"] = merged_snap
+                schwab_payload["active_chain_source"] = "schwab_fallback"
+                payload = schwab_payload
+            except Exception:
+                # Schwab also failed â€” carry over last known contracts if any
+                if existing and existing.get("contracts"):
+                    payload["contracts"] = existing.get("contracts", [])
+                    payload["expirations"] = existing.get("expirations", [])
+                    payload["strikes"] = existing.get("strikes", [])
+                    payload["underlying_price"] = existing.get("underlying_price")
+                    merged_snap = dict(existing.get("symbol_snapshot", {}))
+                    merged_snap.update(
+                        {k: v for k, v in payload.get("symbol_snapshot", {}).items() if v is not None}
+                    )
+                    payload["symbol_snapshot"] = merged_snap
+                    payload["metadata"] = {
+                        **existing.get("metadata", {}),
+                        **payload.get("metadata", {}),
+                        "using_cached_contracts": True,
+                    }
 
     payload["updated_at_epoch"] = time.time()
     payload["last_chain_refresh_epoch"] = time.time()
     payload["requested_by"] = requested_by
-
     return store.upsert_symbol_state(symbol_upper, payload)
 
 
@@ -131,7 +127,6 @@ def manual_refresh_symbol(
     strike_count: int = DEFAULT_STRIKE_COUNT,
     max_expirations: int = DEFAULT_MAX_EXPIRATIONS,
 ) -> Dict[str, Any]:
-    """Force-refresh regardless of cache freshness.  Exposed as an API endpoint."""
     return ensure_symbol_loaded(
         symbol=symbol,
         force=True,
@@ -142,7 +137,6 @@ def manual_refresh_symbol(
 
 
 def archive_all_cached_symbols(reason: str = "scheduled") -> List[str]:
-    """Archive every cached symbol state to disk.  Called at EOD."""
     archived_paths: List[str] = []
     for symbol in list_cached_symbols():
         state = get_symbol_state(symbol)

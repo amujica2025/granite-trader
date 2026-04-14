@@ -1,3 +1,183 @@
+param(
+    [switch]$SkipGit,
+    [string]$Root = "C:\\Users\\alexm\\granite_trader"
+)
+$ErrorActionPreference = "Stop"
+$BACKEND  = Join-Path $Root "backend"
+$FRONTEND = Join-Path $Root "frontend"
+
+function Write-Info([string]$m) { Write-Host "[Granite] $m" -ForegroundColor Cyan }
+function Write-OK([string]$m)   { Write-Host "[Granite] $m" -ForegroundColor Green }
+
+if (-not (Test-Path $BACKEND))  { throw "backend/ not found: $BACKEND" }
+if (-not (Test-Path $FRONTEND)) { throw "frontend/ not found: $FRONTEND" }
+
+# Backup
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$bd = Join-Path $Root "_installer_backups\v04_$ts"
+New-Item -ItemType Directory -Force -Path $bd | Out-Null
+Copy-Item "$BACKEND\cache_manager.py" $bd -Force -ErrorAction SilentlyContinue
+Copy-Item "$FRONTEND\index.html" $bd -Force -ErrorAction SilentlyContinue
+Write-Info "Backup: $bd"
+
+function Write-File([string]$path, [string]$text) {
+    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Info "  wrote $path"
+}
+
+Write-Info "Writing cache_manager.py (Schwab fallback fix)..."
+$cm = @'
+from __future__ import annotations
+
+import os
+import time
+from typing import Any, Dict, List
+
+from archive_manager import archive_symbol_state
+from barchart_adapter import refresh_symbol_from_barchart
+from data_store import store
+from market_clock import is_chain_refresh_window
+from schwab_adapter import get_quote, refresh_symbol_from_schwab
+from source_router import get_active_chain_source
+
+CHAIN_REFRESH_SECONDS = int(os.getenv("CHAIN_REFRESH_SECONDS", "300"))
+DEFAULT_STRIKE_COUNT = int(os.getenv("DEFAULT_CHAIN_STRIKE_COUNT", "200"))
+DEFAULT_MAX_EXPIRATIONS = int(os.getenv("DEFAULT_MAX_EXPIRATIONS", "7"))
+
+
+def _state_is_fresh(state: Dict[str, Any], refresh_seconds: int) -> bool:
+    last = float(state.get("last_chain_refresh_epoch", 0.0) or 0.0)
+    return last > 0 and (time.time() - last) < refresh_seconds
+
+
+def get_symbol_state(symbol: str) -> Dict[str, Any]:
+    return store.get_symbol_state(symbol)
+
+
+def list_cached_symbols() -> List[str]:
+    return store.list_symbols()
+
+
+def ensure_symbol_loaded(
+    symbol: str,
+    force: bool = False,
+    strike_count: int = DEFAULT_STRIKE_COUNT,
+    max_expirations: int = DEFAULT_MAX_EXPIRATIONS,
+    requested_by: str = "api",
+) -> Dict[str, Any]:
+    """
+    Load/refresh symbol state from the appropriate source.
+
+    Priority order:
+    1. Return fresh cache if available (< CHAIN_REFRESH_SECONDS old)
+    2. Return stale cache if outside refresh window and Schwab source
+    3. Fetch from Schwab (market hours) or Barchart (after hours)
+    4. KEY FIX: if Barchart returns no contracts, fall back to Schwab
+       This keeps scanner + vol surface alive after market hours until
+       actual Barchart chain JSON files are placed in data/barchart/chains/
+    """
+    symbol_upper = symbol.upper()
+    existing = store.get_symbol_state(symbol_upper)
+    active_source = get_active_chain_source()
+
+    # Return cached data if fresh
+    if not force and existing and _state_is_fresh(existing, CHAIN_REFRESH_SECONDS):
+        return existing
+
+    # Outside refresh window + Schwab + have something → hold
+    if (
+        not force
+        and existing
+        and not is_chain_refresh_window()
+        and active_source == "schwab"
+    ):
+        return existing
+
+    if active_source == "schwab":
+        payload = refresh_symbol_from_schwab(
+            symbol=symbol_upper,
+            strike_count=strike_count,
+            max_expirations=max_expirations,
+        )
+    else:
+        # After-hours Barchart path
+        fallback_quote: Dict[str, Any] = {}
+        try:
+            fallback_quote = get_quote(symbol_upper)
+        except Exception:
+            fallback_quote = existing.get("quote_raw", {}) if existing else {}
+
+        payload = refresh_symbol_from_barchart(
+            symbol=symbol_upper,
+            fallback_quote_raw=fallback_quote,
+        )
+
+        # FALLBACK: Barchart has no chain JSON → try Schwab anyway
+        if not payload.get("contracts"):
+            try:
+                schwab_payload = refresh_symbol_from_schwab(
+                    symbol=symbol_upper,
+                    strike_count=strike_count,
+                    max_expirations=max_expirations,
+                )
+                # Merge any Barchart watchlist fields on top of Schwab snapshot
+                merged_snap = dict(schwab_payload.get("symbol_snapshot", {}))
+                bc_snap = payload.get("symbol_snapshot", {})
+                merged_snap.update({k: v for k, v in bc_snap.items() if v is not None})
+                schwab_payload["symbol_snapshot"] = merged_snap
+                schwab_payload["active_chain_source"] = "schwab_fallback"
+                payload = schwab_payload
+            except Exception:
+                # Schwab also failed — carry over last known contracts if any
+                if existing and existing.get("contracts"):
+                    payload["contracts"] = existing.get("contracts", [])
+                    payload["expirations"] = existing.get("expirations", [])
+                    payload["strikes"] = existing.get("strikes", [])
+                    payload["underlying_price"] = existing.get("underlying_price")
+                    merged_snap = dict(existing.get("symbol_snapshot", {}))
+                    merged_snap.update(
+                        {k: v for k, v in payload.get("symbol_snapshot", {}).items() if v is not None}
+                    )
+                    payload["symbol_snapshot"] = merged_snap
+                    payload["metadata"] = {
+                        **existing.get("metadata", {}),
+                        **payload.get("metadata", {}),
+                        "using_cached_contracts": True,
+                    }
+
+    payload["updated_at_epoch"] = time.time()
+    payload["last_chain_refresh_epoch"] = time.time()
+    payload["requested_by"] = requested_by
+    return store.upsert_symbol_state(symbol_upper, payload)
+
+
+def manual_refresh_symbol(
+    symbol: str,
+    strike_count: int = DEFAULT_STRIKE_COUNT,
+    max_expirations: int = DEFAULT_MAX_EXPIRATIONS,
+) -> Dict[str, Any]:
+    return ensure_symbol_loaded(
+        symbol=symbol,
+        force=True,
+        strike_count=strike_count,
+        max_expirations=max_expirations,
+        requested_by="manual_refresh",
+    )
+
+
+def archive_all_cached_symbols(reason: str = "scheduled") -> List[str]:
+    archived_paths: List[str] = []
+    for symbol in list_cached_symbols():
+        state = get_symbol_state(symbol)
+        if state:
+            archived_paths.append(str(archive_symbol_state(state, reason=reason)))
+    return archived_paths
+
+'@
+Write-File (Join-Path $BACKEND "cache_manager.py") $cm
+
+Write-Info "Writing index.html (ultrawide UI)..."
+$idx = @'
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -41,7 +221,7 @@ body {
   flex-direction: column;
 }
 
-/* â”€â”€ TOP BAR â”€â”€ */
+/* ── TOP BAR ── */
 #topbar {
   display: flex;
   align-items: center;
@@ -92,7 +272,7 @@ body {
 }
 .source-badge.live { border-color: var(--accent2); color: var(--accent2); }
 
-/* â”€â”€ MAIN GRID â”€â”€ */
+/* ── MAIN GRID ── */
 #workspace {
   display: grid;
   grid-template-columns: 200px 1fr 1fr 1fr 220px;
@@ -134,12 +314,12 @@ body {
   overflow-x: hidden;
 }
 
-/* â”€â”€ SCROLLBARS â”€â”€ */
+/* ── SCROLLBARS ── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
-/* â”€â”€ WATCHLIST PANEL â”€â”€ */
+/* ── WATCHLIST PANEL ── */
 #watchlistFilter {
   width: 100%;
   padding: 5px 8px;
@@ -167,7 +347,7 @@ body {
 .wl-chg.pos { color: var(--accent2); font-size: 10px; }
 .wl-chg.neg { color: var(--danger); font-size: 10px; }
 
-/* â”€â”€ POSITIONS TABLE â”€â”€ */
+/* ── POSITIONS TABLE ── */
 .tbl-wrap { overflow: auto; flex: 1; }
 table { width: 100%; border-collapse: collapse; }
 th, td {
@@ -208,7 +388,7 @@ tbody tr:hover { background: #0f1a24; }
 .pos-short { color: var(--danger); }
 .pos-neutral { color: var(--text); }
 
-/* â”€â”€ TABS â”€â”€ */
+/* ── TABS ── */
 .tabs {
   display: flex;
   border-bottom: 1px solid var(--border);
@@ -231,7 +411,7 @@ tbody tr:hover { background: #0f1a24; }
 .tab-content { display: none; flex: 1; min-height: 0; overflow: auto; flex-direction: column; }
 .tab-content.active { display: flex; }
 
-/* â”€â”€ SCANNER CONTROLS â”€â”€ */
+/* ── SCANNER CONTROLS ── */
 .scan-controls {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -264,7 +444,7 @@ select:focus, input:focus { border-color: var(--accent); }
   flex-shrink: 0;
 }
 
-/* â”€â”€ BUTTONS â”€â”€ */
+/* ── BUTTONS ── */
 .btn {
   padding: 5px 12px;
   border-radius: 3px;
@@ -283,11 +463,11 @@ select:focus, input:focus { border-color: var(--accent); }
 .btn.primary:hover { opacity: .85; }
 .btn.sm { padding: 3px 8px; font-size: 10px; }
 
-/* â”€â”€ SCANNER TABLE â”€â”€ */
+/* ── SCANNER TABLE ── */
 .scan-row.call-row { border-left: 2px solid var(--call); }
 .scan-row.put-row  { border-left: 2px solid var(--put); }
 
-/* â”€â”€ VOL SURFACE â”€â”€ */
+/* ── VOL SURFACE ── */
 .vol-surface-wrap {
   overflow: auto;
   padding: 6px;
@@ -343,7 +523,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .rich-exp .re-iv { font-size: 12px; font-weight: 600; color: var(--text); }
 .rich-exp .re-score { font-size: 9px; color: var(--warn); }
 
-/* â”€â”€ RIGHT CONTROLS PANEL â”€â”€ */
+/* ── RIGHT CONTROLS PANEL ── */
 .ctrl-section {
   padding: 8px;
   border-bottom: 1px solid var(--border);
@@ -398,7 +578,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .log-entry .ts { color: var(--border2); }
 .log-entry .msg { color: var(--text); }
 
-/* â”€â”€ BOTTOM TOTALS BAR â”€â”€ */
+/* ── BOTTOM TOTALS BAR ── */
 #totalsbar {
   display: flex;
   align-items: center;
@@ -421,7 +601,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .total-chip .tc-lbl { font-size: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .total-chip .tc-val { font-size: 12px; font-weight: 600; }
 
-/* â”€â”€ UTILITY â”€â”€ */
+/* ── UTILITY ── */
 .ok    { color: var(--accent2) !important; }
 .bad   { color: var(--danger) !important; }
 .warn  { color: var(--warn) !important; }
@@ -432,7 +612,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .empty-msg { color: var(--muted); padding: 20px; text-align: center; font-size: 11px; }
 .spinner { text-align: center; padding: 20px; color: var(--muted); font-size: 10px; }
 
-/* â”€â”€ SCAN ROW BADGE â”€â”€ */
+/* ── SCAN ROW BADGE ── */
 .side-badge {
   display: inline-block;
   padding: 1px 6px;
@@ -444,7 +624,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .side-badge.call { background: rgba(63,185,80,.15); color: var(--call); border: 1px solid var(--call); }
 .side-badge.put  { background: rgba(248,81,73,.15);  color: var(--put);  border: 1px solid var(--put); }
 
-/* â”€â”€ RICHNESS SCORE COLOR â”€â”€ */
+/* ── RICHNESS SCORE COLOR ── */
 .rs-high { color: var(--gold); font-weight: 600; }
 .rs-mid  { color: var(--text); }
 .rs-low  { color: var(--muted); }
@@ -456,29 +636,29 @@ select:focus, input:focus { border-color: var(--accent); }
 </head>
 <body>
 
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• TOP BAR â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- ════════════════════ TOP BAR ════════════════════ -->
 <div id="topbar">
-  <span class="brand">â¬¡ GRANITE</span>
+  <span class="brand">⬡ GRANITE</span>
 
   <div class="metric-pill">
     <span class="lbl">Net Liq</span>
-    <span class="val" id="m-netliq">â€”</span>
+    <span class="val" id="m-netliq">—</span>
   </div>
   <div class="metric-pill">
-    <span class="lbl">Limit (Ã—25)</span>
-    <span class="val" id="m-limit">â€”</span>
+    <span class="lbl">Limit (×25)</span>
+    <span class="val" id="m-limit">—</span>
   </div>
   <div class="metric-pill">
     <span class="lbl">Used</span>
-    <span class="val" id="m-used">â€”</span>
+    <span class="val" id="m-used">—</span>
   </div>
   <div class="metric-pill">
     <span class="lbl">Room</span>
-    <span class="val" id="m-room">â€”</span>
+    <span class="val" id="m-room">—</span>
   </div>
   <div class="metric-pill">
     <span class="lbl">Used %</span>
-    <span class="val" id="m-usedpct">â€”</span>
+    <span class="val" id="m-usedpct">—</span>
   </div>
   <div class="metric-pill">
     <span class="lbl">Active Symbol</span>
@@ -486,33 +666,33 @@ select:focus, input:focus { border-color: var(--accent); }
   </div>
   <div class="metric-pill">
     <span class="lbl">Price</span>
-    <span class="val" id="m-price">â€”</span>
+    <span class="val" id="m-price">—</span>
   </div>
   <div class="metric-pill">
     <span class="lbl">Change</span>
-    <span class="val" id="m-chg">â€”</span>
+    <span class="val" id="m-chg">—</span>
   </div>
 
   <span class="source-badge" id="sourceBadge">LOADING</span>
 
-  <button class="btn sm" id="refreshBtn" onclick="fullRefresh()">â†º REFRESH</button>
-  <button class="btn sm" id="notifyBtn" onclick="enableAlerts()">ðŸ”” ALERTS</button>
+  <button class="btn sm" id="refreshBtn" onclick="fullRefresh()">↺ REFRESH</button>
+  <button class="btn sm" id="notifyBtn" onclick="enableAlerts()">🔔 ALERTS</button>
 </div>
 
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• MAIN WORKSPACE â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- ════════════════════ MAIN WORKSPACE ════════════════════ -->
 <div id="workspace">
 
-  <!-- â•â•â• PANEL 1: WATCHLIST â•â•â• -->
+  <!-- ═══ PANEL 1: WATCHLIST ═══ -->
   <div class="panel">
     <div class="panel-hdr">
       <h2>Watchlist</h2>
       <span class="muted" style="font-size:9px" id="wlCount">0 symbols</span>
     </div>
-    <input id="watchlistFilter" placeholder="Filter symbolsâ€¦" oninput="filterWatchlist(this.value)"/>
+    <input id="watchlistFilter" placeholder="Filter symbols…" oninput="filterWatchlist(this.value)"/>
     <div class="panel-body" id="watchlistBody"></div>
   </div>
 
-  <!-- â•â•â• PANEL 2: OPEN POSITIONS â•â•â• -->
+  <!-- ═══ PANEL 2: OPEN POSITIONS ═══ -->
   <div class="panel">
     <div class="panel-hdr">
       <h2>Open Positions</h2>
@@ -547,7 +727,7 @@ select:focus, input:focus { border-color: var(--accent); }
     </div>
   </div>
 
-  <!-- â•â•â• PANEL 3: SCANNER + VOL SURFACE â•â•â• -->
+  <!-- ═══ PANEL 3: SCANNER + VOL SURFACE ═══ -->
   <div class="panel">
     <div class="panel-hdr">
       <h2 id="scanPanelTitle">Entry Scanner</h2>
@@ -596,8 +776,8 @@ select:focus, input:focus { border-color: var(--accent); }
         </div>
       </div>
       <div class="scan-actions">
-        <button class="btn primary" onclick="runScan()">â–¶ SCAN</button>
-        <button class="btn" onclick="clearScan()">âœ• CLEAR</button>
+        <button class="btn primary" onclick="runScan()">▶ SCAN</button>
+        <button class="btn" onclick="clearScan()">✕ CLEAR</button>
         <span id="scanCount" class="muted" style="font-size:10px;margin-left:4px;align-self:center"></span>
       </div>
       <div id="scanError" class="error-msg"></div>
@@ -615,7 +795,7 @@ select:focus, input:focus { border-color: var(--accent); }
               <th>Gr Risk</th>
               <th>Max Loss</th>
               <th>Cr%Risk</th>
-              <th>Sht Î”</th>
+              <th>Sht Δ</th>
               <th>Sht IV</th>
               <th>Richness</th>
               <th>Impact</th>
@@ -635,7 +815,7 @@ select:focus, input:focus { border-color: var(--accent); }
     </div>
   </div>
 
-  <!-- â•â•â• PANEL 4: POSITION DETAIL / ROLL CANDIDATES â•â•â• -->
+  <!-- ═══ PANEL 4: POSITION DETAIL / ROLL CANDIDATES ═══ -->
   <div class="panel">
     <div class="panel-hdr">
       <h2>Selected Legs</h2>
@@ -669,10 +849,10 @@ select:focus, input:focus { border-color: var(--accent); }
         <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Selection Totals</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px" id="selTotals">
           <div class="total-chip"><span class="tc-lbl">Legs</span><span class="tc-val" id="st-legs">0</span></div>
-          <div class="total-chip"><span class="tc-lbl">P/L Open</span><span class="tc-val" id="st-pnl">â€”</span></div>
-          <div class="total-chip"><span class="tc-lbl">Short Value</span><span class="tc-val" id="st-sv">â€”</span></div>
-          <div class="total-chip"><span class="tc-lbl">Long Cost</span><span class="tc-val" id="st-lc">â€”</span></div>
-          <div class="total-chip"><span class="tc-lbl">Limit Impact</span><span class="tc-val" id="st-imp">â€”</span></div>
+          <div class="total-chip"><span class="tc-lbl">P/L Open</span><span class="tc-val" id="st-pnl">—</span></div>
+          <div class="total-chip"><span class="tc-lbl">Short Value</span><span class="tc-val" id="st-sv">—</span></div>
+          <div class="total-chip"><span class="tc-lbl">Long Cost</span><span class="tc-val" id="st-lc">—</span></div>
+          <div class="total-chip"><span class="tc-lbl">Limit Impact</span><span class="tc-val" id="st-imp">—</span></div>
         </div>
       </div>
     </div>
@@ -698,7 +878,7 @@ select:focus, input:focus { border-color: var(--accent); }
     </div>
   </div>
 
-  <!-- â•â•â• PANEL 5: CONTROLS + ALERTS + LOG â•â•â• -->
+  <!-- ═══ PANEL 5: CONTROLS + ALERTS + LOG ═══ -->
   <div class="panel">
     <div class="panel-hdr">
       <h2>Controls</h2>
@@ -747,7 +927,7 @@ select:focus, input:focus { border-color: var(--accent); }
 
       <div class="ctrl-section">
         <h3>Cache Status</h3>
-        <div id="cacheStatus" style="font-size:10px;color:var(--muted)">â€”</div>
+        <div id="cacheStatus" style="font-size:10px;color:var(--muted)">—</div>
         <button class="btn sm" style="margin-top:6px" onclick="loadCacheStatus()">Check Cache</button>
       </div>
 
@@ -761,14 +941,14 @@ select:focus, input:focus { border-color: var(--accent); }
 
 </div>
 
-<!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• BOTTOM TOTALS BAR â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+<!-- ════════════════════ BOTTOM TOTALS BAR ════════════════════ -->
 <div id="totalsbar">
   <span style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px">SELECTED:</span>
   <div class="total-chip"><span class="tc-lbl">Legs</span><span class="tc-val" id="tb-legs">0</span></div>
-  <div class="total-chip"><span class="tc-lbl">Short Value</span><span class="tc-val" id="tb-sv">â€”</span></div>
-  <div class="total-chip"><span class="tc-lbl">Long Cost</span><span class="tc-val" id="tb-lc">â€”</span></div>
-  <div class="total-chip"><span class="tc-lbl">P/L Open</span><span class="tc-val" id="tb-pnl">â€”</span></div>
-  <div class="total-chip"><span class="tc-lbl">Limit Impact</span><span class="tc-val" id="tb-imp">â€”</span></div>
+  <div class="total-chip"><span class="tc-lbl">Short Value</span><span class="tc-val" id="tb-sv">—</span></div>
+  <div class="total-chip"><span class="tc-lbl">Long Cost</span><span class="tc-val" id="tb-lc">—</span></div>
+  <div class="total-chip"><span class="tc-lbl">P/L Open</span><span class="tc-val" id="tb-pnl">—</span></div>
+  <div class="total-chip"><span class="tc-lbl">Limit Impact</span><span class="tc-val" id="tb-imp">—</span></div>
   <div class="total-chip ml-auto"><span class="tc-lbl">Positions Loaded</span><span class="tc-val" id="tb-poscount">0</span></div>
   <div class="total-chip"><span class="tc-lbl">Scanner Results</span><span class="tc-val" id="tb-scancount">0</span></div>
 </div>
@@ -776,7 +956,7 @@ select:focus, input:focus { border-color: var(--accent); }
 <script>
 const API = 'http://localhost:8000';
 
-// â”€â”€ STATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── STATE ────────────────────────────────────────────────
 let positions = [];
 let selectedIds = new Set();
 let acctSource = 'mock';
@@ -786,7 +966,7 @@ let alertsEnabled = false;
 let lastAlertPrice = null;
 let scanResults = [];
 
-// â”€â”€ WATCHLIST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── WATCHLIST ────────────────────────────────────────────
 const WATCHLIST = [
   'SPY','QQQ','IWM','DIA','GLD','SLV','TLT','XSP',
   'AAPL','NVDA','TSLA','AMZN','META','MSFT','GOOGL',
@@ -812,7 +992,7 @@ function renderWatchlist(filter='') {
       <div class="wl-row${sym===activeWlSym?' active':''}" onclick="loadSymbol('${sym}')">
         <span class="wl-sym">${sym}</span>
         <div style="text-align:right">
-          <div class="wl-price">${p ? '$'+p.price.toFixed(2) : 'â€”'}</div>
+          <div class="wl-price">${p ? '$'+p.price.toFixed(2) : '—'}</div>
           <div class="wl-chg ${chgClass}">${chgText}</div>
         </div>
       </div>`;
@@ -828,17 +1008,17 @@ async function loadSymbol(sym) {
   document.getElementById('alertSym').value = activeWlSym;
   document.getElementById('m-sym').textContent = activeWlSym;
   renderWatchlist(document.getElementById('watchlistFilter').value);
-  log(`Loading ${activeWlSym}â€¦`);
+  log(`Loading ${activeWlSym}…`);
   await getQuote();
   await populateExpFilter();
 }
 
-// â”€â”€ FORMATTING â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const fmt$ = v => v==null ? 'â€”' : '$' + Number(v).toFixed(2);
-const fmtN = (v, d=2) => v==null ? 'â€”' : Number(v).toFixed(d);
-const fmtPct = v => v==null ? 'â€”' : (Number(v)*100).toFixed(2)+'%';
-const fmtIV  = v => v==null ? 'â€”' : (Number(v)*100).toFixed(2)+'%';
-const fmtSign = v => v==null ? 'â€”' : (v>=0?'+':'')+Number(v).toFixed(2);
+// ── FORMATTING ──────────────────────────────────────────
+const fmt$ = v => v==null ? '—' : '$' + Number(v).toFixed(2);
+const fmtN = (v, d=2) => v==null ? '—' : Number(v).toFixed(d);
+const fmtPct = v => v==null ? '—' : (Number(v)*100).toFixed(2)+'%';
+const fmtIV  = v => v==null ? '—' : (Number(v)*100).toFixed(2)+'%';
+const fmtSign = v => v==null ? '—' : (v>=0?'+':'')+Number(v).toFixed(2);
 
 function colorVal(v) {
   if (v==null) return '';
@@ -853,7 +1033,7 @@ function rsClass(v) {
   return ' class="rs-low"';
 }
 
-// â”€â”€ API â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── API ─────────────────────────────────────────────────
 async function api(path) {
   const r = await fetch(API + path);
   const t = await r.text();
@@ -872,7 +1052,7 @@ async function apiPost(path, body) {
   catch { throw new Error(t || r.status); }
 }
 
-// â”€â”€ LOG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── LOG ─────────────────────────────────────────────────
 function log(msg, cls='') {
   const el = document.getElementById('activityLog');
   const ts = new Date().toLocaleTimeString('en-US',{hour12:false});
@@ -883,7 +1063,7 @@ function log(msg, cls='') {
   if (el.children.length > 50) el.removeChild(el.lastChild);
 }
 
-// â”€â”€ ACCOUNT / POSITIONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ACCOUNT / POSITIONS ─────────────────────────────────
 function setAcctSource(src) {
   acctSource = src;
   document.getElementById('acctMock').className = 'acct-btn' + (src==='mock'?' active':'');
@@ -899,7 +1079,7 @@ async function loadPositions() {
     renderMetrics(data.limit_summary, data.source);
     renderPositions();
     document.getElementById('tb-poscount').textContent = positions.length;
-    log(`Positions loaded (${data.source}) â€” ${positions.length} legs`, 'ok');
+    log(`Positions loaded (${data.source}) — ${positions.length} legs`, 'ok');
   } catch(e) {
     document.getElementById('positionsError').textContent = e.message;
     log('Positions error: ' + e.message, 'bad');
@@ -935,7 +1115,7 @@ function renderPositions() {
   let html = '';
   Object.entries(groups).forEach(([k, rows]) => {
     const [underlying, group] = k.split('||');
-    html += `<tr class="group-hdr"><td colspan="12">${underlying} ${group?'â€” '+group:''}</td></tr>`;
+    html += `<tr class="group-hdr"><td colspan="12">${underlying} ${group?'— '+group:''}</td></tr>`;
     rows.forEach(row => {
       const chk = selectedIds.has(row.id) ? 'checked' : '';
       const typeClass = row.option_type==='C' ? 'pos-call' : 'pos-put';
@@ -1011,7 +1191,7 @@ async function refreshTotals() {
   setChip('tb-imp',  fmt$(imp));
 }
 
-// â”€â”€ QUOTE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── QUOTE ────────────────────────────────────────────────
 async function getQuote() {
   const sym = (document.getElementById('quoteInput').value||'SPY').toUpperCase().trim();
   document.getElementById('quoteInput').value = sym;
@@ -1019,7 +1199,7 @@ async function getQuote() {
   document.getElementById('m-sym').textContent = sym;
 
   try {
-    log(`Fetching quote + chain: ${sym}â€¦`);
+    log(`Fetching quote + chain: ${sym}…`);
     const data = await api(`/quote/schwab?symbol=${encodeURIComponent(sym)}`);
 
     // Parse Schwab quote structure
@@ -1029,7 +1209,7 @@ async function getQuote() {
     const chg  = Number(q.netChange || 0);
     const pct  = Number(q.netPercentChange || (q.closePrice ? chg/q.closePrice : 0));
 
-    document.getElementById('m-price').textContent = last ? '$'+last.toFixed(2) : 'â€”';
+    document.getElementById('m-price').textContent = last ? '$'+last.toFixed(2) : '—';
     const chgEl = document.getElementById('m-chg');
     chgEl.textContent = (chg>=0?'+':'')+chg.toFixed(2)+' ('+((pct*100).toFixed(2))+'%)';
     chgEl.className = 'val ' + (chg>=0?'ok':'bad');
@@ -1070,11 +1250,11 @@ async function getQuote() {
 
 function updateSourceBadge(src) {
   const el = document.getElementById('sourceBadge');
-  el.textContent = src === 'schwab' ? 'â— SCHWAB LIVE' : src === 'schwab_fallback' ? 'â— SCHWAB FALLBACK' : 'â—‹ BARCHART';
+  el.textContent = src === 'schwab' ? '● SCHWAB LIVE' : src === 'schwab_fallback' ? '● SCHWAB FALLBACK' : '○ BARCHART';
   el.className = 'source-badge' + (src.includes('schwab') ? ' live' : '');
 }
 
-// â”€â”€ EXPIRATION FILTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── EXPIRATION FILTER ────────────────────────────────────
 async function populateExpFilter() {
   const sym = document.getElementById('scanSym').value.trim().toUpperCase() || 'SPY';
   try {
@@ -1089,7 +1269,7 @@ async function populateExpFilter() {
   }
 }
 
-// â”€â”€ SCANNER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── SCANNER ──────────────────────────────────────────────
 async function runScan() {
   const sym  = document.getElementById('scanSym').value.trim().toUpperCase() || 'SPY';
   const risk = document.getElementById('scanRisk').value || 600;
@@ -1099,9 +1279,9 @@ async function runScan() {
   const max  = document.getElementById('scanMax').value || 150;
 
   document.getElementById('scanError').textContent = '';
-  document.getElementById('scanBody').innerHTML = '<tr><td colspan="14" class="spinner">Scanningâ€¦</td></tr>';
+  document.getElementById('scanBody').innerHTML = '<tr><td colspan="14" class="spinner">Scanning…</td></tr>';
   document.getElementById('scanCount').textContent = '';
-  log(`Scanning ${sym} (${side}, risk $${risk}, sort: ${sort})â€¦`);
+  log(`Scanning ${sym} (${side}, risk $${risk}, sort: ${sort})…`);
 
   try {
     const qs = new URLSearchParams({symbol:sym, total_risk:risk, side, expiration:exp, sort_by:sort, max_results:max});
@@ -1125,7 +1305,7 @@ async function runScan() {
 function renderScanResults(items) {
   const body = document.getElementById('scanBody');
   if (!items.length) {
-    body.innerHTML = '<tr><td colspan="14" class="empty-msg">No results â€” try different filters or refresh symbol</td></tr>';
+    body.innerHTML = '<tr><td colspan="14" class="empty-msg">No results — try different filters or refresh symbol</td></tr>';
     return;
   }
   body.innerHTML = items.map(r => {
@@ -1157,12 +1337,12 @@ function clearScan() {
   document.getElementById('tb-scancount').textContent = '0';
 }
 
-// â”€â”€ VOL SURFACE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── VOL SURFACE ──────────────────────────────────────────
 async function loadVolSurface(sym) {
   sym = sym || document.getElementById('scanSym').value.trim().toUpperCase() || 'SPY';
   const wrap = document.getElementById('volSurfaceWrap');
-  wrap.innerHTML = '<div class="spinner">Building vol surfaceâ€¦</div>';
-  document.getElementById('richnessBar').innerHTML = '<span class="spinner">Loadingâ€¦</span>';
+  wrap.innerHTML = '<div class="spinner">Building vol surface…</div>';
+  document.getElementById('richnessBar').innerHTML = '<span class="spinner">Loading…</span>';
 
   try {
     const data = await api(`/vol/surface?symbol=${encodeURIComponent(sym)}&max_expirations=7&strike_count=21`);
@@ -1183,7 +1363,7 @@ function renderVolSurface(d) {
   const rb = document.getElementById('richnessBar');
 
   if (!exps.length) {
-    wrap.innerHTML = '<div class="empty-msg">No surface data â€” load a symbol first</div>';
+    wrap.innerHTML = '<div class="empty-msg">No surface data — load a symbol first</div>';
     rb.innerHTML = '';
     return;
   }
@@ -1193,8 +1373,8 @@ function renderVolSurface(d) {
   rb.innerHTML = sorted.map(({e,r}) => `
     <div class="rich-exp" onclick="document.getElementById('scanExp').value='${e}'; switchTab('scanner');">
       <span class="re-date">${e}</span>
-      <span class="re-iv">${r.avg_iv != null ? (r.avg_iv*100).toFixed(1)+'%' : 'â€”'}</span>
-      <span class="re-score">Score: ${r.richness_score != null ? Number(r.richness_score).toFixed(4) : 'â€”'}</span>
+      <span class="re-iv">${r.avg_iv != null ? (r.avg_iv*100).toFixed(1)+'%' : '—'}</span>
+      <span class="re-score">Score: ${r.richness_score != null ? Number(r.richness_score).toFixed(4) : '—'}</span>
     </div>`).join('');
 
   // Color scale
@@ -1233,7 +1413,7 @@ function renderVolSurface(d) {
       strikes.forEach((_, ci) => {
         const v = m[ri]?.[ci];
         const bg = clr(v);
-        html += `<td style="background:${bg}">${v!=null?(Number(v)*100).toFixed(2):'â€”'}</td>`;
+        html += `<td style="background:${bg}">${v!=null?(Number(v)*100).toFixed(2):'—'}</td>`;
       });
       html += '</tr>';
     });
@@ -1289,14 +1469,14 @@ function buildVolMatrix(m) {
     html += `<tr><th class="exp-label">${exp}</th>`;
     strikes.forEach((_,ci) => {
       const v = m[ri]?.[ci];
-      html += `<td style="background:${clr(v)}">${v!=null?(Number(v)*100).toFixed(2):'â€”'}</td>`;
+      html += `<td style="background:${clr(v)}">${v!=null?(Number(v)*100).toFixed(2):'—'}</td>`;
     });
     html += '</tr>';
   });
   return html + '</tbody></table>';
 }
 
-// â”€â”€ TABS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── TABS ─────────────────────────────────────────────────
 function switchTab(id) {
   document.querySelectorAll('#tab-scanner,#tab-surface').forEach(el => {
     el.classList.toggle('active', el.id==='tab-'+id);
@@ -1312,7 +1492,7 @@ function switchDetailTab(id) {
   });
 }
 
-// â”€â”€ ALERTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── ALERTS ───────────────────────────────────────────────
 async function enableAlerts() {
   if (!('Notification' in window)) {
     document.getElementById('alertStatus').textContent = 'Not supported in this browser';
@@ -1321,9 +1501,9 @@ async function enableAlerts() {
   const perm = await Notification.requestPermission();
   alertsEnabled = perm === 'granted';
   document.getElementById('alertStatus').textContent = alertsEnabled
-    ? 'âœ“ Desktop alerts active'
-    : 'âœ— Permission denied';
-  if (alertsEnabled) document.getElementById('notifyBtn').textContent = 'ðŸ”” ACTIVE';
+    ? '✓ Desktop alerts active'
+    : '✗ Permission denied';
+  if (alertsEnabled) document.getElementById('notifyBtn').textContent = '🔔 ACTIVE';
   log(`Desktop alerts: ${perm}`, alertsEnabled?'ok':'warn');
 }
 
@@ -1332,7 +1512,7 @@ function sendDesktopAlert(title, body) {
   new Notification(title, {body, icon: ''});
 }
 
-// â”€â”€ AUTO REFRESH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── AUTO REFRESH ─────────────────────────────────────────
 function toggleAutoRefresh() {
   const on = document.getElementById('autoRefreshChk').checked;
   if (on) {
@@ -1348,7 +1528,7 @@ function toggleAutoRefresh() {
 }
 
 async function fullRefresh() {
-  document.getElementById('refreshBtn').textContent = 'â†» â€¦';
+  document.getElementById('refreshBtn').textContent = '↻ …';
   try {
     await loadPositions();
     const sym = document.getElementById('scanSym').value.trim().toUpperCase() || 'SPY';
@@ -1360,22 +1540,22 @@ async function fullRefresh() {
   } catch(e) {
     log('Refresh error: ' + e.message, 'bad');
   }
-  document.getElementById('refreshBtn').textContent = 'â†º REFRESH';
+  document.getElementById('refreshBtn').textContent = '↺ REFRESH';
 }
 
-// â”€â”€ CACHE STATUS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── CACHE STATUS ─────────────────────────────────────────
 async function loadCacheStatus() {
   try {
     const d = await api('/cache/status');
     const el = document.getElementById('cacheStatus');
-    el.textContent = `Source: ${d.active_chain_source || 'â€”'} | ${d.count || 0} symbols: ${(d.symbols||[]).join(', ')||'none'}`;
+    el.textContent = `Source: ${d.active_chain_source || '—'} | ${d.count || 0} symbols: ${(d.symbols||[]).join(', ')||'none'}`;
     updateSourceBadge(d.active_chain_source || 'unknown');
   } catch(e) {
     document.getElementById('cacheStatus').textContent = 'Error: ' + e.message;
   }
 }
 
-// â”€â”€ INIT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── INIT ─────────────────────────────────────────────────
 (async () => {
   renderWatchlist();
   await loadPositions();
@@ -1389,3 +1569,22 @@ async function loadCacheStatus() {
 </script>
 </body>
 </html>
+
+'@
+Write-File (Join-Path $FRONTEND "index.html") $idx
+
+if (-not $SkipGit -and (Test-Path (Join-Path $Root ".git"))) {
+    Push-Location $Root
+    git add -A
+    if (git status --porcelain) {
+        git commit -m "v0.4 ultrawide UI + cache Schwab fallback fix"
+        git push
+        Write-OK "Git push complete."
+    } else {
+        Write-Info "Nothing to commit."
+    }
+    Pop-Location
+}
+
+Write-OK "=== v0.4 install complete ==="
+Write-Host "Restart the app then open http://localhost:5500" -ForegroundColor Cyan

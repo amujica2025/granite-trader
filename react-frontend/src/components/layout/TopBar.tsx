@@ -26,6 +26,7 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
     limitSummary, quote, acctSource, setAcctSource,
     theme, setTheme, refreshInterval, refreshCountdown,
     setRefreshInterval, desktopAllowed, setDesktopAllowed,
+    streamConnected, streamSource,
   } = useStore()
 
   const usedPct  = limitSummary ? Number(limitSummary.used_pct) * 100 : 0
@@ -94,10 +95,11 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
           <span className="lbl">Used %</span>
           <span className="val" style={{ color: pctColor }}>{usedPct.toFixed(1)}%</span>
         </div>
-        <div className="tpill" style={{ minWidth: 80 }}>
-          <span className="lbl">Source</span>
-          <span className="val" style={{ fontSize: 11, color: 'var(--green)' }}>
-            {quote.activeSource || '--'}
+        <div className="tpill" style={{ minWidth: 100 }}>
+          <span className="lbl">Data Source</span>
+          <span className="val" style={{ fontSize: 11, color: streamConnected ? 'var(--green)' : 'var(--muted)', display: 'flex', alignItems: 'center', gap: 5 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: streamConnected ? 'var(--green)' : 'var(--border)', flexShrink: 0, boxShadow: streamConnected ? '0 0 6px var(--green)' : 'none' }} />
+            {streamConnected ? 'DXLINK LIVE' : (quote.activeSource || 'REST')}
           </span>
         </div>
 

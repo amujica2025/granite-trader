@@ -1,3 +1,7 @@
+param([string]$Root = "C:\\Users\\alexm\\granite_trader")
+$ErrorActionPreference = "Stop"
+$p = Join-Path $Root "backend\\dx_streamer.py"
+$c = @'
 """
 dx_streamer.py  ?  Granite Trader DXLink streaming client
 
@@ -628,3 +632,9 @@ def streamer_get_candles(symbol: str, period: str) -> List[Dict[str, Any]]:
 
 def streamer_is_connected() -> bool:
     return bool(_streamer and _streamer._connected and _streamer._authorized)
+
+'@
+[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] dx_streamer.py patched - AUTH timing fixed" -ForegroundColor Green
+Write-Host "Now restart the backend:" -ForegroundColor Yellow
+Write-Host "  pkill -f uvicorn then ./install_and_run_wsl.sh" -ForegroundColor Cyan

@@ -1,3 +1,377 @@
+param([string]$Root = "C:\\Users\\alexm\\granite_trader")
+$ErrorActionPreference = "Stop"
+function WF([string]$rel,[string]$txt){$p=Join-Path $Root ($rel -replace '/','\\')
+$d=Split-Path $p -Parent
+if(-not(Test-Path $d)){New-Item -ItemType Directory -Force -Path $d|Out-Null}
+[System.IO.File]::WriteAllText($p,$txt,(New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] $rel" -ForegroundColor Cyan}
+
+Write-Host "Installing tastytrade-only backend..." -ForegroundColor Yellow
+$c = @'
+"""
+tasty_chain_adapter.py  ?  Granite Trader
+
+Fetches option chains from tastytrade REST API.
+Normalizes output to the same format previously produced by schwab_adapter.py
+so scanner.py, vol_surface.py and cache_manager.py need zero changes.
+
+tastytrade chain endpoint:
+  GET /option-chains/{underlying}/nested
+  Returns expirations with strikes ? call/put legs with bid/ask/delta/IV
+
+DXLink Greeks supplement:
+  IV and delta in the REST chain are snapshot values.
+  When DXLink Greeks stream is active, live values overwrite these at runtime.
+"""
+from __future__ import annotations
+
+import os
+import time
+from collections import Counter
+from statistics import mean
+from typing import Any, Dict, List, Optional
+
+import requests
+
+
+# ?? Auth ??????????????????????????????????????????????????????????????????????
+
+def _get_session_token() -> str:
+    """Reuse fetch_account_snapshot for correctly refreshed session token."""
+    from tasty_adapter import fetch_account_snapshot
+    snap = fetch_account_snapshot()
+    tok  = snap.get("session_token", "")
+    if not tok:
+        raise RuntimeError("tastytrade session_token unavailable ? check .env credentials")
+    return tok
+
+
+def _headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {_get_session_token()}",
+        "Content-Type":  "application/json",
+    }
+
+
+TASTY_BASE = os.getenv("TASTY_BASE_URL", "https://api.tastytrade.com")
+
+
+# ?? Helpers ???????????????????????????????????????????????????????????????????
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        f = float(v) if v not in (None, "", "NaN") else default
+        return f if f == f else default   # NaN guard
+    except Exception:
+        return default
+
+
+def _mid(bid: float, ask: float) -> float:
+    if bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    return ask or bid or 0.0
+
+
+def _compute_strike_spacing(contracts: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Same as schwab_adapter ? detect strike step per expiration."""
+    grouped: Dict[str, List[float]] = {}
+    for c in contracts:
+        exp = str(c.get("expiration", ""))
+        grouped.setdefault(exp, []).append(_safe_float(c.get("strike", 0)))
+
+    output: Dict[str, Dict[str, Any]] = {}
+    for exp, strikes in grouped.items():
+        unique = sorted({round(s, 4) for s in strikes if s > 0})
+        diffs  = [round(unique[i+1] - unique[i], 4) for i in range(len(unique)-1)]
+        pos    = [d for d in diffs if d > 0]
+        ctr    = Counter(pos)
+        output[exp] = {
+            "strike_count": len(unique),
+            "min_step":     min(pos) if pos else None,
+            "max_step":     max(pos) if pos else None,
+            "common_step":  ctr.most_common(1)[0][0] if ctr else None,
+            "step_set":     sorted(ctr.keys()),
+        }
+    return output
+
+
+def _atm_iv(contracts: List[Dict[str, Any]], underlying_price: float) -> float:
+    """Compute ATM IV from nearest-to-money contracts."""
+    if not contracts or underlying_price <= 0:
+        return 0.0
+    sorted_c = sorted(contracts, key=lambda x: abs(_safe_float(x.get("strike", 0)) - underlying_price))
+    atm = sorted_c[:4]
+    ivs = [_safe_float(c.get("iv")) for c in atm if _safe_float(c.get("iv")) > 0]
+    return mean(ivs) if ivs else 0.0
+
+
+# ?? Main chain fetch ??????????????????????????????????????????????????????????
+
+def refresh_symbol_from_tasty(
+    symbol: str,
+    strike_count: int = 200,
+    max_expirations: int = 7,
+) -> Dict[str, Any]:
+    """
+    Fetch option chain from tastytrade and return normalized state dict
+    compatible with data_store / scanner / vol_surface.
+    """
+    symbol_upper = symbol.upper()
+
+    # ?? 1. Quote (live from DXLink store if available, else from chain) ????
+    underlying_price = 0.0
+    from data_store import store as _store
+    live_px = _store.get_live_price(symbol_upper)
+    if live_px and live_px > 0:
+        underlying_price = live_px
+
+    # ?? 2. Fetch option chain ?????????????????????????????????????????????
+    url  = f"{TASTY_BASE}/option-chains/{symbol_upper}/nested"
+    resp = requests.get(url, headers=_headers(), timeout=15)
+
+    if not resp.ok:
+        raise RuntimeError(
+            f"tastytrade chain fetch failed: {resp.status_code} {resp.text[:200]}"
+        )
+
+    chain_data = resp.json().get("data", {})
+    items      = chain_data.get("items", [])   # list of expiration objects
+
+    if not items:
+        raise RuntimeError(f"No option chain data returned for {symbol_upper}")
+
+    # ?? 3. Normalize ??????????????????????????????????????????????????????
+    contracts:   List[Dict[str, Any]] = []
+    expirations: List[str] = []
+    all_strikes: List[float] = []
+
+    for exp_obj in items[:max_expirations]:
+        exp_date = str(exp_obj.get("expiration-date", ""))
+        dte      = int(exp_obj.get("days-to-expiration", 0))
+
+        if not exp_date:
+            continue
+        expirations.append(exp_date)
+
+        strikes_list = exp_obj.get("strikes", [])
+
+        # Limit strikes to strike_count nearest to ATM
+        if underlying_price > 0 and len(strikes_list) > strike_count:
+            strikes_list = sorted(
+                strikes_list,
+                key=lambda s: abs(_safe_float(s.get("strike-price", 0)) - underlying_price)
+            )[:strike_count]
+
+        for strike_obj in strikes_list:
+            strike_px = _safe_float(strike_obj.get("strike-price", 0))
+            if strike_px <= 0:
+                continue
+            all_strikes.append(strike_px)
+
+            for side, side_key in (("call", "call"), ("put", "put")):
+                leg = strike_obj.get(side_key)
+                if not leg:
+                    continue
+
+                bid  = _safe_float(leg.get("bid"))
+                ask  = _safe_float(leg.get("ask"))
+                mark = _safe_float(leg.get("mid-price") or leg.get("mark") or 0)
+                if mark == 0:
+                    mark = _mid(bid, ask)
+
+                # IV: tastytrade returns as decimal already (e.g. 0.18 = 18%)
+                iv    = _safe_float(leg.get("implied-volatility") or leg.get("iv") or 0)
+                delta = _safe_float(leg.get("delta") or 0)
+
+                # Use live DXLink Greeks if available
+                streamer_sym = str(leg.get("streamer-symbol", "") or "")
+                if streamer_sym:
+                    live_greeks = _store.get_option_greeks(streamer_sym)
+                    if live_greeks:
+                        iv    = live_greeks.get("live_iv",    iv)
+                        delta = live_greeks.get("live_delta", delta)
+
+                contracts.append({
+                    "underlying":         symbol_upper,
+                    "option_side":        side,
+                    "expiration":         exp_date,
+                    "days_to_expiration": dte,
+                    "strike":             round(strike_px, 4),
+                    "bid":                round(bid,  4),
+                    "ask":                round(ask,  4),
+                    "mark":               round(mark, 4),
+                    "mid":                round(_mid(bid, ask), 4),
+                    "delta":              round(delta, 6),
+                    "iv":                 round(iv, 6),
+                    "total_volume":       _safe_float(leg.get("volume", 0)),
+                    "open_interest":      _safe_float(leg.get("open-interest", 0)),
+                    "in_the_money":       bool(leg.get("in-the-money")),
+                    "option_symbol":      str(leg.get("symbol", "") or ""),
+                    "streamer_symbol":    streamer_sym,
+                    "description":        str(leg.get("description", "") or ""),
+                    "underlying_price":   round(underlying_price, 4),
+                })
+
+    if not contracts:
+        raise RuntimeError(f"Chain parsed but produced no contracts for {symbol_upper}")
+
+    # If we still don't have underlying price, derive from ATM mark
+    if underlying_price <= 0 and contracts:
+        atm_c = min(contracts, key=lambda c: abs(c["strike"] - (contracts[0]["underlying_price"] or 500)))
+        underlying_price = atm_c.get("strike", 0)
+
+    expirations_sorted = sorted(set(expirations))
+    strikes_sorted     = sorted(set(round(s, 4) for s in all_strikes))
+    atm_iv             = _atm_iv(contracts, underlying_price)
+
+    spacing = _compute_strike_spacing(contracts)
+
+    # ?? 4. Build symbol snapshot (watchlist-style fields) ?????????????????
+    symbol_snapshot: Dict[str, Any] = {
+        "symbol":            symbol_upper,
+        "underlying_price":  round(underlying_price, 2),
+        "atm_iv":            round(atm_iv, 4),
+        "atm_iv_pct":        round(atm_iv * 100, 2),
+        "contract_count":    len(contracts),
+        "expiration_count":  len(expirations_sorted),
+        "chain_source":      "tastytrade",
+    }
+
+    return {
+        "symbol":                         symbol_upper,
+        "underlying_price":               round(underlying_price, 4),
+        "contracts":                      contracts,
+        "expirations":                    expirations_sorted,
+        "strikes":                        strikes_sorted,
+        "strike_spacing_by_expiration":   spacing,
+        "atm_iv":                         round(atm_iv, 6),
+        "active_chain_source":            "tastytrade",
+        "symbol_snapshot":                symbol_snapshot,
+        "metadata": {
+            "chain_fetched_at":   time.time(),
+            "contract_count":     len(contracts),
+            "expiration_count":   len(expirations_sorted),
+            "strike_count":       len(strikes_sorted),
+            "source":             "tastytrade",
+        },
+        "quote_raw": {
+            symbol_upper: {
+                "quote": {
+                    "lastPrice":  underlying_price,
+                    "mark":       underlying_price,
+                }
+            }
+        },
+    }
+
+'@
+WF "backend\tasty_chain_adapter.py" $c
+
+$c = @'
+"""
+cache_manager.py  ?  Granite Trader
+
+Symbol state cache. Uses tastytrade option chains exclusively.
+DXLink streaming provides live quotes/candles ? no Schwab needed.
+"""
+from __future__ import annotations
+
+import os
+import time
+from typing import Any, Dict, List
+
+from data_store import store
+
+CHAIN_REFRESH_SECONDS  = int(os.getenv("CHAIN_REFRESH_SECONDS", "300"))
+DEFAULT_STRIKE_COUNT   = int(os.getenv("DEFAULT_CHAIN_STRIKE_COUNT", "200"))
+DEFAULT_MAX_EXPIRATIONS= int(os.getenv("DEFAULT_MAX_EXPIRATIONS", "7"))
+
+
+def _is_fresh(state: Dict[str, Any]) -> bool:
+    last = float(state.get("last_chain_refresh_epoch", 0) or 0)
+    return last > 0 and (time.time() - last) < CHAIN_REFRESH_SECONDS
+
+
+def get_symbol_state(symbol: str) -> Dict[str, Any]:
+    return store.get_symbol_state(symbol)
+
+
+def list_cached_symbols() -> List[str]:
+    return store.list_symbols()
+
+
+def ensure_symbol_loaded(
+    symbol: str,
+    force: bool = False,
+    strike_count: int = DEFAULT_STRIKE_COUNT,
+    max_expirations: int = DEFAULT_MAX_EXPIRATIONS,
+    requested_by: str = "api",
+) -> Dict[str, Any]:
+    """
+    Return symbol state from cache if fresh, otherwise fetch from tastytrade.
+    Falls back to stale cache if tastytrade fetch fails.
+    """
+    sym      = symbol.upper()
+    existing = store.get_symbol_state(sym)
+
+    # Return fresh cache immediately
+    if not force and existing and _is_fresh(existing):
+        return existing
+
+    # Fetch fresh chain from tastytrade
+    try:
+        from tasty_chain_adapter import refresh_symbol_from_tasty
+        payload = refresh_symbol_from_tasty(
+            symbol=sym,
+            strike_count=strike_count,
+            max_expirations=max_expirations,
+        )
+    except Exception as exc:
+        # Chain fetch failed ? return stale cache if we have it
+        if existing and existing.get("contracts"):
+            existing["metadata"] = {
+                **existing.get("metadata", {}),
+                "chain_error": str(exc),
+                "using_stale_cache": True,
+            }
+            return existing
+        raise RuntimeError(
+            f"tastytrade chain fetch failed for {sym} and no cache available: {exc}"
+        )
+
+    payload["updated_at_epoch"]        = time.time()
+    payload["last_chain_refresh_epoch"] = time.time()
+    payload["requested_by"]            = requested_by
+    return store.upsert_symbol_state(sym, payload)
+
+
+def manual_refresh_symbol(
+    symbol: str,
+    strike_count: int = DEFAULT_STRIKE_COUNT,
+    max_expirations: int = DEFAULT_MAX_EXPIRATIONS,
+) -> Dict[str, Any]:
+    return ensure_symbol_loaded(
+        symbol=symbol,
+        force=True,
+        strike_count=strike_count,
+        max_expirations=max_expirations,
+        requested_by="manual_refresh",
+    )
+
+
+def archive_all_cached_symbols(reason: str = "scheduled") -> List[str]:
+    from archive_manager import archive_symbol_state
+    paths = []
+    for sym in list_cached_symbols():
+        state = get_symbol_state(sym)
+        if state:
+            paths.append(str(archive_symbol_state(state, reason=reason)))
+    return paths
+
+'@
+WF "backend\cache_manager.py" $c
+
+$c = @'
 from __future__ import annotations
 
 import asyncio
@@ -431,3 +805,18 @@ def alerts_send(payload: AlertPayload) -> Dict[str, Any]:
 @app.post("/alerts/pushover")
 def alerts_pushover(payload: AlertPayload) -> Dict[str, Any]:
     return send_pushover(payload.message, payload.title)
+
+'@
+WF "backend\main.py" $c
+
+Write-Host "" 
+Write-Host "Schwab removed. Stack is now:" -ForegroundColor Green
+Write-Host "  tastytrade  -> account + positions + option chains" -ForegroundColor Cyan
+Write-Host "  DXLink      -> live quotes + candles + Greeks (streaming)" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Restart backend in your WSL window (Ctrl+C then):" -ForegroundColor Yellow
+Write-Host "  uvicorn main:app --port 8000" -ForegroundColor White
+Write-Host ""
+Write-Host "Test chain fetch:" -ForegroundColor Yellow
+Write-Host "  curl http://localhost:8000/chain?symbol=SPY" -ForegroundColor White
+Write-Host "  curl http://localhost:8000/scan/live?symbol=SPY^&total_risk=1000" -ForegroundColor White

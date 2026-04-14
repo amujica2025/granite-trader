@@ -15,12 +15,13 @@ import { SelectedLegsTile, TradeTicketTile } from './components/tiles/LegsTile'
 import { AlertModal }      from './components/modals/AlertModal'
 
 import { useStore } from './store/useStore'
+import { useStream } from './hooks/useStream'
 import {
   fetchAccount, fetchQuote, fetchChain,
   fetchVolSurface, sendPushover,
 } from './api/client'
 
-// â”€â”€ Grid layout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? Grid layout ?????????????????????????????????????????????
 const COLS   = 16
 const ROW_H  = 40
 const TOPBAR_H  = 72
@@ -28,7 +29,7 @@ const BOTTOM_H  = 38
 
 const STORAGE_KEY = 'granite_layout_v2'
 
-// Default layout optimised for 3840Ã—1080 ultrawide (16 cols)
+// Default layout optimised for 3840?1080 ultrawide (16 cols)
 const DEFAULT_LAYOUT: Layout[] = [
   { i: 'watchlist', x: 0,  y: 0, w: 1,  h: 14, minW: 1, minH: 4 },
   { i: 'positions', x: 1,  y: 0, w: 5,  h: 9,  minW: 2, minH: 3 },
@@ -51,7 +52,7 @@ function saveLayout(l: Layout[]) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(l)) } catch {}
 }
 
-// â”€â”€ Gear icon button (renders in tile header via portal-like approach) â”€â”€â”€â”€â”€â”€
+// ?? Gear icon button (renders in tile header via portal-like approach) ??????
 function TileGear({ tileId, onOpen }: { tileId: string; onOpen: (id: string) => void }) {
   return (
     <button
@@ -64,7 +65,7 @@ function TileGear({ tileId, onOpen }: { tileId: string; onOpen: (id: string) => 
   )
 }
 
-// â”€â”€ Gear settings modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? Gear settings modal ??????????????????????????????????????
 const TILE_FIELDS: Record<string, { label: string; fields: { key: string; label: string }[] }> = {
   watchlist: {
     label: 'Watchlist',
@@ -173,7 +174,7 @@ function GearModal({ tileId, onClose }: { tileId: string; onClose: () => void })
   )
 }
 
-// â”€â”€ Wrapped tile with focus border and gear icon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? Wrapped tile with focus border and gear icon ?????????????
 function TileWrapper({
   id, children, focusedTile, setFocusedTile, onGearOpen,
 }: {
@@ -196,7 +197,7 @@ function TileWrapper({
   )
 }
 
-// â”€â”€ Main App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? Main App ????????????????????????????????????????????????
 
 export default function App() {
   const {
@@ -221,7 +222,7 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  // â”€â”€ Data loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Data loading ?????????????????????????????????????????
 
   const loadPositions = useCallback(async () => {
     setPositionsLoading(true)
@@ -303,13 +304,16 @@ export default function App() {
     })
   }
 
-  // â”€â”€ Symbol orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Symbol orchestrator ???????????????????????????????????
 
   const loadSymbol = useCallback(async (sym: string) => {
     setActiveSymbol(sym)
-    setFocusedTile('scanner') // shift focus to scanner on symbol load
+    setFocusedTile('scanner')
     await Promise.all([loadQuote(sym), loadChain(sym), loadVolSurface(sym)])
-  }, [loadQuote, loadChain, loadVolSurface])
+    // Subscribe new symbol to live stream
+    subscribeQuotes([sym])
+    subscribeCandles(sym, '20y')
+  }, [loadQuote, loadChain, loadVolSurface, subscribeQuotes, subscribeCandles])
 
   const scanSymbol = useCallback(async (sym: string) => {
     setActiveSymbol(sym)
@@ -317,7 +321,7 @@ export default function App() {
     await Promise.all([loadQuote(sym), loadChain(sym)])
   }, [loadQuote, loadChain])
 
-  // â”€â”€ Full refresh â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Full refresh ??????????????????????????????????????????
 
   const fullRefresh = useCallback(async () => {
     await loadPositions()
@@ -325,24 +329,28 @@ export default function App() {
     resetCountdown()
   }, [loadPositions, loadQuote, activeSymbol])
 
-  // â”€â”€ Auto-refresh countdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Auto-refresh countdown ????????????????????????????????
   useEffect(() => {
     const t = setInterval(tickCountdown, 1000)
     return () => clearInterval(t)
   }, [])
 
-  useEffect(() => {
-    if (refreshCountdown <= 0) fullRefresh()
-  }, [refreshCountdown])
+  // ?? Stream connection ?????????????????????????????????????????????????????
+  const { subscribeQuotes, subscribeCandles } = useStream()
 
-  // â”€â”€ Initial load â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Initial load ??????????????????????????????????????????????????????????
   useEffect(() => {
     loadPositions()
     loadSymbol('SPY')
     Notification.requestPermission()
+    // Subscribe to live stream after WS handshake has time to complete
+    setTimeout(() => {
+      subscribeQuotes(['SPY', 'QQQ', 'GLD'])
+      subscribeCandles('SPY', '20y')
+    }, 2000)
   }, [])
 
-  // â”€â”€ Layout persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ?? Layout persistence ????????????????????????????????????
   function onLayoutChange(nl: Layout[]) { setLayout(nl); saveLayout(nl) }
   function resetLayout() { setLayout(DEFAULT_LAYOUT); saveLayout(DEFAULT_LAYOUT) }
 

@@ -38,28 +38,15 @@ _running: bool = False
 
 def _get_access_token() -> tuple[str, str]:
     """
-    Returns (access_token, account_number) from the tastytrade session.
+    Returns (access_token, account_number) using the existing tasty_adapter
+    which correctly handles async session refresh.
     """
-    from tastytrade import Session
-    client_secret   = os.getenv("TASTY_CLIENT_SECRET", "").strip()
-    refresh_token   = os.getenv("TASTY_REFRESH_TOKEN", "").strip()
-    account_number  = os.getenv("TASTY_ACCOUNT_NUMBER", "").strip()
-
-    if not client_secret or not refresh_token:
-        raise RuntimeError("TASTY_CLIENT_SECRET / TASTY_REFRESH_TOKEN not set")
-
-    session    = Session(client_secret, refresh_token)
-    auth_token = getattr(session, "session_token", None) \
-              or getattr(session, "_session_token", None) \
-              or ""
-
+    from tasty_adapter import fetch_account_snapshot
+    account_number = os.getenv("TASTY_ACCOUNT_NUMBER", "").strip()
+    snapshot   = fetch_account_snapshot()
+    auth_token = snapshot.get("session_token", "")
     if not auth_token:
-        headers    = getattr(session, "headers", {})
-        auth_token = headers.get("Authorization", "").replace("Bearer ", "")
-
-    if not auth_token:
-        raise RuntimeError("Could not extract tastytrade access token")
-
+        raise RuntimeError("tastytrade session_token not found. Check .env credentials.")
     return auth_token, account_number
 
 

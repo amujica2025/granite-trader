@@ -225,7 +225,7 @@ function MiniHistoTwo({ hist, l1, l2, height, title }: {
 // ?? Main component ???????????????????????????????????????????
 
 export function ChartTile() {
-  const { activeSymbol, quote, positions } = useStore()
+  const { activeSymbol, quote, positions, streamCandles, streamConnected, streamSource } = useStore()
 
   const chartRef     = useRef<HTMLDivElement>(null)
   const chart        = useRef<IChartApi | null>(null)
@@ -346,6 +346,51 @@ export function ChartTile() {
       loadChart(sym, '20y', 'daily')
     }
   }, [chartReady])
+
+  // ?? Stream candle updates ?????????????????????????????????????????????????
+  // When DXLink sends candle events, streamCandles is updated in the store.
+  // We watch it here and call series.update() for smooth live bar updates.
+  useEffect(() => {
+    if (!candleSeries.current || !chartReady) return
+
+    const daily  = freq === 'daily' || freq === 'weekly' || freq === 'monthly'
+    const period = tf   // e.g. '20y'
+
+    // Map period to DXLink candle interval
+    const intervalMap: Record<string, string> = {
+      '1d':'5m','5d':'15m','1m':'30m','3m':'1h',
+      '6m':'2h','1y':'1d','2y':'1d','5y':'1d',
+      '10y':'1d','20y':'1d','ytd':'1d',
+    }
+    const interval  = intervalMap[period] ?? '1d'
+    const candleKey = `${sym.toUpperCase()}{=${interval}}`
+    const streamed  = streamCandles[candleKey]
+
+    if (!streamed || streamed.length === 0) return
+
+    // If we have more candles than before, do a full setData (bulk load)
+    // Otherwise just update the last bar
+    const existing = candles
+    if (streamed.length > existing.length + 10) {
+      // Bulk historical load arrived ? set all at once
+      const cdData = streamed.map(c => ({
+        time:  (daily ? new Date(c.time * 1000).toISOString().slice(0, 10) : c.time) as Time,
+        open: c.open, high: c.high, low: c.low, close: c.close,
+      }))
+      candleSeries.current!.setData(cdData)
+      setCandles(streamed)
+      chart.current?.timeScale().fitContent()
+    } else if (streamed.length > 0) {
+      // Live bar update ? just update the last candle
+      const last = streamed[streamed.length - 1]
+      const bar = {
+        time:  (daily ? new Date(last.time * 1000).toISOString().slice(0, 10) : last.time) as Time,
+        open: last.open, high: last.high, low: last.low, close: last.close,
+      }
+      try { candleSeries.current!.update(bar) } catch {}
+    }
+  }, [streamCandles, chartReady, sym, tf, freq])
+
 
   // Reload when active symbol changes from another tile
   useEffect(() => {
@@ -497,6 +542,10 @@ export function ChartTile() {
               onClick={() => ind.fn((v: boolean) => !v)}>{ind.label}</button>
           ))}
           {loading && <span style={{ fontSize: 11, color: 'var(--muted)', marginLeft: 6 }}>Loading {sym}...</span>}
+          <span style={{ marginLeft: 'auto', fontSize: 10, color: streamConnected ? 'var(--green)' : 'var(--muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: streamConnected ? 'var(--green)' : 'var(--border)', display: 'inline-block' }} />
+            {streamConnected ? 'LIVE' : 'REST'}
+          </span>
           {error   && <span style={{ fontSize: 11, color: 'var(--red)',   marginLeft: 6 }}>{error}</span>}
         </div>
       </div>

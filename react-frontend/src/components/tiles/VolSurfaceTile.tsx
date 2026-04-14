@@ -4,7 +4,7 @@ import { useStore } from '../../store/useStore'
 import type { VSView } from '../../types'
 import { fetchVolSurface } from '../../api/client'
 
-const COLORSCALE: Plotly.ColorScale = [
+const COLORSCALE = [
   [0.00, '#080e24'],
   [0.15, '#0c3c7a'],
   [0.30, '#156a48'],
@@ -26,6 +26,12 @@ export function VolSurfaceTile() {
   const plotRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState<VSView>('3d')
   const [plotted, setPlotted] = useState(false)
+
+  // Auto-load on mount and when activeSymbol changes
+  useEffect(() => {
+    const s = activeSymbol || 'SPY'
+    load(s)
+  }, [activeSymbol])
 
   async function load(sym?: string) {
     const s = sym ?? activeSymbol
@@ -97,7 +103,7 @@ export function VolSurfaceTile() {
     const gridColor = '#1c2b3a'
 
     if (view === '3d') {
-      const trace: Plotly.Data = {
+      const trace: any = {
         type: 'surface',
         x: sortedStrikes,
         y: expirations,
@@ -120,7 +126,7 @@ export function VolSurfaceTile() {
         hovertemplate: 'Strike: %{x}<br>Exp: %{y}<br>IV: %{z:.2f}%<extra></extra>',
       }
 
-      const layout: Partial<Plotly.Layout> = {
+      const layout: any = {
         paper_bgcolor: paperBg,
         font,
         margin: { l: 0, r: 60, t: 10, b: 0 },
@@ -155,7 +161,7 @@ export function VolSurfaceTile() {
       Plotly.react(el, [trace], layout, { responsive: false, displayModeBar: false })
     } else {
       const title = view === 'skew' ? 'Put - Call Skew (%)' : 'IV (%)'
-      const trace: Plotly.Data = {
+      const trace: any = {
         type: 'heatmap',
         x: sortedStrikes,
         y: expirations,
@@ -173,7 +179,7 @@ export function VolSurfaceTile() {
         } as any,
         hovertemplate: 'Strike: %{x}<br>Exp: %{y}<br>Value: %{z:.2f}%<extra></extra>',
       }
-      const layout: Partial<Plotly.Layout> = {
+      const layout: any = {
         paper_bgcolor: paperBg,
         plot_bgcolor: plotBg,
         font,
@@ -230,7 +236,7 @@ export function VolSurfaceTile() {
         })}
       </div>
 
-      {/* Plotly container â€” fills all remaining space */}
+      {/* Plotly container ? fills all remaining space */}
       <div ref={plotRef} style={{ flex: 1, minHeight: 0, width: '100%' }} />
     </div>
   )

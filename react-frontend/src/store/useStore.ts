@@ -11,7 +11,7 @@ interface QuoteState {
   netPctChange: number | null
   bid: number | null
   ask: number | null
-  atmStraddle: number | null   // ATM call + put mid â€” for expected move lines
+  atmStraddle: number | null   // ATM call + put mid ? for expected move lines
   activeSource: string
 }
 
@@ -109,7 +109,7 @@ const INITIAL_QUOTE: QuoteState = {
 
 export const useStore = create<AppState & AppActions>((set, get) => ({
   // State
-  acctSource: 'mock',
+  acctSource: 'tasty',
   positions: [],
   limitSummary: null,
   positionsLoading: false,

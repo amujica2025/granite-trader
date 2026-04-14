@@ -55,7 +55,7 @@ const COLS = [
   }),
   ch.accessor('actual_defined_risk', {
     header: 'Act Risk', size: 72,
-    cell: i => <span style={{ color: 'var(--muted)' }}>{f$(i.getValue())}</span>,
+    cell: i => <span style={{ color: 'var(--muted)' }}>{f$(i.getValue() as number)}</span>,
     meta: { tip: 'Actual defined risk = Width Ã— 100 Ã— Qty. May differ slightly from target when qty rounds.' },
   }),
   ch.accessor('max_loss', {

@@ -44,7 +44,7 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
 
   return (
     <div className="topbar">
-      {/* â”€â”€ LEFT: brand + menu â”€â”€ */}
+      {/* ?? LEFT: brand + menu ?? */}
       <div className="topbar-left">
         <span className="topbar-brand">&#x2B21; GRANITE</span>
         <div className="tsep" />
@@ -60,7 +60,7 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
         </button>
       </div>
 
-      {/* â”€â”€ CENTER: focal price display â”€â”€ */}
+      {/* ?? CENTER: focal price display ?? */}
       <div className="topbar-center">
         <span className="topbar-sym">{quote.symbol}</span>
         <span
@@ -72,7 +72,7 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
         <span className="topbar-chg" style={{ color: chgColor }}>{chgText}</span>
       </div>
 
-      {/* â”€â”€ RIGHT: balances â”€â”€ */}
+      {/* ?? RIGHT: balances ?? */}
       <div className="topbar-right">
         <div className="tpill">
           <span className="lbl">Net Liq</span>
@@ -101,22 +101,9 @@ export function TopBar({ onRefreshNow, onAlertsOpen }: Props) {
           </span>
         </div>
 
-        {/* Account toggle */}
-        <div style={{ display: 'flex', gap: 3, marginLeft: 4 }}>
-          <button
-            className={`btn sm${acctSource === 'tasty' ? ' active' : ''}`}
-            onClick={() => setAcctSource('tasty')}
-          >
-            TASTY
-          </button>
-          <button
-            className={`btn sm${acctSource === 'mock' ? ' active' : ''}`}
-            onClick={() => setAcctSource('mock')}
-            style={{ opacity: 0.5 }}
-            title="Mock mode (for testing without live account)"
-          >
-            MOCK
-          </button>
+        {/* Account source ? always live */}
+        <div style={{ padding: '3px 10px', background: 'var(--bg3)', border: '1px solid var(--green)', borderRadius: 3, fontSize: 11, color: 'var(--green)', fontWeight: 700 }}>
+          TASTY LIVE
         </div>
       </div>
     </div>

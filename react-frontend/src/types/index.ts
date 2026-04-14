@@ -36,6 +36,8 @@ export interface ScanResult {
   quantity: number
   defined_risk: number
   gross_defined_risk: number
+  actual_defined_risk: number
+  target_defined_risk: number
   max_loss: number
   short_price: number
   long_price: number

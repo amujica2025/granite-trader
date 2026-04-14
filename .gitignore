@@ -1,4 +1,5 @@
 .env
+.env.local
 __pycache__/
 *.pyc
 *.pyo
@@ -6,3 +7,9 @@ __pycache__/
 venv/
 node_modules/
 backend/schwab_token.json
+_installer_backups/
+_backups/
+data/archive/
+data/barchart/chains/
+data/barchart/watchlists/
+data/barchart/html/

@@ -5,3 +5,4 @@ python-multipart
 schwab-py
 tastytrade
 python-dotenv
+beautifulsoup4

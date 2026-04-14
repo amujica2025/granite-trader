@@ -148,3 +148,23 @@ def alerts_send(payload: AlertPayload) -> Dict[str, Any]:
 @app.post("/alerts/pushover")
 def alerts_pushover(payload: AlertPayload) -> Dict[str, Any]:
     return send_pushover(payload.message, payload.title)
+
+
+# â”€â”€ Chart / Price History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+@app.get("/chart/history")
+def chart_history(
+    symbol: str = Query(..., min_length=1),
+    period: str = Query("5y"),
+    frequency: str = Query("daily"),
+) -> Dict[str, Any]:
+    """
+    Fetch OHLCV candles for charting.
+    period: 1d|5d|1m|3m|6m|1y|2y|5y|10y|ytd
+    frequency: minute|5min|15min|30min|hourly|daily|weekly|monthly
+    """
+    try:
+        from chart_adapter import get_price_history
+        return get_price_history(symbol=symbol, period=period, frequency=frequency)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

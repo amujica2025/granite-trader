@@ -126,8 +126,11 @@ def _flatten_contract_map(
                 ask = _safe_float(contract.get("ask"), default=0.0)
                 mark = _safe_float(contract.get("mark"), default=0.0)
                 delta = _safe_float(contract.get("delta"), default=0.0)
-                # Schwab returns IV as a decimal (e.g. 0.18 = 18%)
-                iv = _safe_float(contract.get("volatility"), default=0.0)
+                # Schwab returns volatility as an annualized PERCENTAGE (e.g., 34.25 = 34.25% IV)
+                # Divide by 100 to store as decimal for consistent internal use.
+                # Frontend displays as (v * 100).toFixed(2) + '%' â€” correct with decimal form.
+                raw_iv = _safe_float(contract.get("volatility"), default=0.0)
+                iv = raw_iv / 100.0
                 total_volume = _safe_float(contract.get("totalVolume"), default=0.0)
                 open_interest = _safe_float(contract.get("openInterest"), default=0.0)
                 description = str(contract.get("description", "") or "")

@@ -6,3 +6,4 @@ schwab-py
 tastytrade
 python-dotenv
 beautifulsoup4
+websockets>=12.0

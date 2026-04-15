@@ -1,3 +1,7 @@
+param([string]$Root = "C:\\Users\\alexm\\granite_trader")
+$ErrorActionPreference = "Stop"
+$p = Join-Path $Root "backend\\main.py"
+$c = @'
 from __future__ import annotations
 
 import asyncio
@@ -484,3 +488,9 @@ def alerts_send(payload: AlertPayload) -> Dict[str, Any]:
 @app.post("/alerts/pushover")
 def alerts_pushover(payload: AlertPayload) -> Dict[str, Any]:
     return send_pushover(payload.message, payload.title)
+
+'@
+[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] main.py - auto-subscribe SPY on startup" -ForegroundColor Green
+Write-Host "uvicorn auto-reloads in 2-3 seconds" -ForegroundColor Cyan
+Write-Host "Wait 10 seconds then refresh browser" -ForegroundColor Yellow

@@ -19,7 +19,7 @@
 [data-theme="mono"]{--bg:#060606;--bg1:#0e0e0e;--bg2:#161616;--bg3:#1e1e1e;--border:#282828;--bord2:#343434;--text:#cccccc;--muted:#686868;--accent:#b0b0b0;--green:#909090;--red:#787878;--warn:#888888;--gold:#cccccc;--focus-border:#c0c0c0}
 
 /* ?? Base ?????????????????????????????????????????????????? */
-html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: 'IBM Plex Mono', 'Courier New', monospace; font-size: var(--app-font-size, 14px); line-height: 1.5; -webkit-font-smoothing: antialiased; }
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--bord2); border-radius: 2px; }

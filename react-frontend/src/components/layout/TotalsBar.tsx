@@ -88,8 +88,22 @@ export function TotalsBar({ onRefreshNow, onAlertsOpen, onResetLayout }: Props) 
         <div className="tchip"><span className="tl">Scan Results</span><span className="tv">{scanResults.length}</span></div>
 
         <button className="btn sm" onClick={onResetLayout} style={{ opacity: 0.5, fontSize: 9 }}>
-          RESET LAYOUT
+          RESET
         </button>
+
+        <div style={{ width: 1, height: 20, background: 'var(--border)', margin: '0 4px' }} />
+
+        {/* Font size slider */}
+        <span style={{ fontSize: 9, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>FONT</span>
+        <input
+          type="range"
+          min={11} max={18} step={1}
+          defaultValue={14}
+          style={{ width: 70, accentColor: 'var(--accent)', cursor: 'pointer' }}
+          onChange={(e) => {
+            document.documentElement.style.setProperty('--app-font-size', e.target.value + 'px')
+          }}
+        />
       </div>
     </div>
   )

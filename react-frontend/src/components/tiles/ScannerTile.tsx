@@ -10,13 +10,13 @@ import { fetchVolSurface } from '../../api/client'
 
 const ch = createColumnHelper<ScanResult>()
 
-// â”€â”€ 2dp formatters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? 2dp formatters ?????????????????????????????????????????
 const f$  = (v: number | null | undefined) => v == null ? '--' : '$' + Number(v).toFixed(2)
 const fPct = (v: number | null | undefined) => v == null ? '--' : (Number(v) * 100).toFixed(2) + '%'
 const fIV  = (v: number | null | undefined) => v == null ? '--' : (Number(v) * 100).toFixed(2) + '%'
 const fN2  = (v: number | null | undefined) => v == null ? '--' : Number(v).toFixed(2)
 
-// â”€â”€ Column definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ?? Column definitions ?????????????????????????????????????
 const COLS = [
   ch.accessor('expiration', {
     header: 'Exp', size: 94,
@@ -31,12 +31,12 @@ const COLS = [
   ch.accessor('short_strike', {
     header: 'Short', size: 60,
     cell: i => fN2(i.getValue()),
-    meta: { tip: 'Strike you SELL â€” where you collect premium' },
+    meta: { tip: 'Strike you SELL ? where you collect premium' },
   }),
   ch.accessor('long_strike', {
     header: 'Long', size: 60,
     cell: i => fN2(i.getValue()),
-    meta: { tip: 'Strike you BUY â€” your protection leg' },
+    meta: { tip: 'Strike you BUY ? your protection leg' },
   }),
   ch.accessor('width', {
     header: 'Wid', size: 46,
@@ -56,7 +56,7 @@ const COLS = [
   ch.accessor('actual_defined_risk', {
     header: 'Act Risk', size: 72,
     cell: i => <span style={{ color: 'var(--muted)' }}>{f$(i.getValue() as number)}</span>,
-    meta: { tip: 'Actual defined risk = Width Ã— 100 Ã— Qty. May differ slightly from target when qty rounds.' },
+    meta: { tip: 'Actual defined risk = Width ? 100 ? Qty. May differ slightly from target when qty rounds.' },
   }),
   ch.accessor('max_loss', {
     header: 'Max Loss', size: 76,
@@ -66,17 +66,17 @@ const COLS = [
   ch.accessor('credit_pct_risk', {
     header: 'Cr%Risk', size: 66,
     cell: i => <span>{fPct(i.getValue())}</span>,
-    meta: { tip: 'Net Credit / Actual Risk â€” primary reward/risk metric. 30% = collected 30Â¢ per $1 at risk.' },
+    meta: { tip: 'Net Credit / Actual Risk ? primary reward/risk metric. 30% = collected 30? per $1 at risk.' },
   }),
   ch.accessor('short_delta', {
-    header: 'Sht Î”', size: 60,
+    header: 'Sht ?', size: 60,
     cell: i => <span style={{ color: 'var(--muted)' }}>{fN2(i.getValue())}</span>,
-    meta: { tip: 'Delta of the short leg â‰ˆ approximate probability ITM at expiry' },
+    meta: { tip: 'Delta of the short leg ? approximate probability ITM at expiry' },
   }),
   ch.accessor('short_iv', {
     header: 'Sht IV', size: 62,
     cell: i => <span style={{ color: 'var(--muted)' }}>{fIV(i.getValue())}</span>,
-    meta: { tip: 'Implied volatility of the short strike â€” what you are selling. Now correctly scaled.' },
+    meta: { tip: 'Implied volatility of the short strike ? what you are selling. Now correctly scaled.' },
   }),
   ch.accessor('richness_score', {
     header: 'Score', size: 58,
@@ -90,9 +90,22 @@ const COLS = [
   ch.accessor('limit_impact', {
     header: 'Impact', size: 72,
     cell: i => <span style={{ color: 'var(--warn)' }}>{f$(i.getValue())}</span>,
-    meta: { tip: 'max(Short Value, Long Cost) â€” tastytrade limit usage for this trade' },
+    meta: { tip: 'max(Short Value, Long Cost) ? tastytrade limit usage for this trade' },
   }),
 ]
+
+
+function downloadScanResults(results: any[]) {
+  if (!results.length) return
+  const headers = ['exp','side','short','long','width','qty','net_credit','act_risk','max_loss','cr_pct_risk','short_delta','short_iv','score','impact']
+  const rows = results.map(r => headers.map(h => r[h] ?? '').join(','))
+  const csv  = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href = url; a.download = `scan_${new Date().toISOString().slice(0,10)}.csv`
+  a.click(); URL.revokeObjectURL(url)
+}
 
 export function ScannerTile() {
   const {

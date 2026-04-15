@@ -1,3 +1,7 @@
+param([string]$Root = "C:\\Users\\alexm\\granite_trader")
+$ErrorActionPreference = "Stop"
+$p = Join-Path $Root "backend\\main.py"
+$c = @'
 from __future__ import annotations
 
 import asyncio
@@ -83,21 +87,6 @@ def on_startup() -> None:
         log.info("Account streamer started")
     except Exception as exc:
         log.warning(f"Account streamer could not start: {exc}")
-
-    # Auto-subscribe core symbols to DXLink on startup
-    import threading
-    def _auto_subscribe():
-        import time
-        time.sleep(5)  # wait for DXLink handshake to complete
-        try:
-            from dx_streamer import streamer_subscribe_quotes, streamer_subscribe_candles
-            core = ["SPY", "QQQ", "GLD", "IWM", "VIX"]
-            streamer_subscribe_quotes(core)
-            streamer_subscribe_candles("SPY", "20y")
-            log.info(f"Auto-subscribed core symbols: {core}")
-        except Exception as exc:
-            log.warning(f"Auto-subscribe failed: {exc}")
-    threading.Thread(target=_auto_subscribe, daemon=True).start()
 
 
 # ?? Health ???????????????????????????????????????????????????????????????????
@@ -484,3 +473,9 @@ def alerts_send(payload: AlertPayload) -> Dict[str, Any]:
 @app.post("/alerts/pushover")
 def alerts_pushover(payload: AlertPayload) -> Dict[str, Any]:
     return send_pushover(payload.message, payload.title)
+
+'@
+[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] main.py patched" -ForegroundColor Green
+Write-Host "/quote/schwab now returns DXLink data in Schwab format" -ForegroundColor Cyan
+Write-Host "uvicorn auto-reloads - refresh browser in 3s" -ForegroundColor Yellow

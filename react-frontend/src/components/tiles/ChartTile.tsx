@@ -497,14 +497,20 @@ export function ChartTile() {
             style={{ width: 70, fontSize: 13, fontWeight: 700, padding: '2px 6px' }}
           />
 
-          {TF_OPTIONS.map(t => (
-            <button
-              key={t.label}
-              className={`btn sm${tf === t.period ? ' active' : ''}`}
-              style={{ fontSize: 12 }}
-              onClick={() => { setTf(t.period); setFreq(t.freq); loadChart(sym, t.period, t.freq) }}
-            >{t.label}</button>
-          ))}
+          <div style={{ display: 'flex', gap: 1, background: 'var(--bg3)', borderRadius: 4, padding: 2 }}>
+            {TF_OPTIONS.map(t => (
+              <button
+                key={t.label}
+                onClick={() => { setTf(t.period); setFreq(t.freq); loadChart(sym, t.period, t.freq) }}
+                style={{
+                  padding: '3px 8px', fontSize: 11, border: 'none', borderRadius: 3, cursor: 'pointer',
+                  background: tf === t.period ? 'var(--accent)' : 'transparent',
+                  color: tf === t.period ? 'var(--bg)' : 'var(--muted)',
+                  fontWeight: tf === t.period ? 700 : 400, fontFamily: 'inherit',
+                }}
+              >{t.label}</button>
+            ))}
+          </div>
 
           {/* Focal price */}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'baseline', gap: 10 }}>

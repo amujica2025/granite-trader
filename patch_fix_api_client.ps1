@@ -1,3 +1,171 @@
+param([string]$Root = "C:\\Users\\alexm\\granite_trader")
+$ErrorActionPreference = "Stop"
+function WF([string]$rel,[string]$txt){$p=Join-Path $Root ($rel -replace '/','\\')
+$d=Split-Path $p -Parent
+if(-not(Test-Path $d)){New-Item -ItemType Directory -Force -Path $d|Out-Null}
+[System.IO.File]::WriteAllText($p,$txt,(New-Object System.Text.UTF8Encoding($false)))
+Write-Host "[OK] $rel" -ForegroundColor Cyan}
+
+$c = @'
+import type { LimitSummary, Position, ScanResult, VolSurfaceData } from '../types'
+
+const API = 'http://localhost:8000'
+
+async function get<T>(path: string): Promise<T> {
+  const r = await fetch(API + path)
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(text || `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(API + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    throw new Error(text || `HTTP ${r.status}`)
+  }
+  return r.json()
+}
+
+// ?? Account ???????????????????????????????????????????????
+export async function fetchAccount(source: 'mock' | 'tasty'): Promise<{
+  source: string
+  positions: Position[]
+  limit_summary: LimitSummary
+}> {
+  // Always use tasty ? mock removed
+  return get('/account/tasty')
+}
+
+// ?? Quote ? DXLink live + chain fallback ??????????????????
+export async function fetchQuote(symbol: string): Promise<{
+  symbol: string
+  source: string
+  live_last?: number
+  live_bid?: number
+  live_ask?: number
+  live_open?: number
+  live_high?: number
+  live_low?: number
+  live_prev_close?: number
+  live_volume?: number
+  underlying_price?: number
+}> {
+  return get(`/quote/live?symbol=${encodeURIComponent(symbol)}`)
+}
+
+// ?? Chain ? tastytrade + DXLink ???????????????????????????
+export async function fetchChain(symbol: string): Promise<{
+  symbol: string
+  underlying_price: number
+  expirations: string[]
+  strikes: number[]
+  active_chain_source: string
+}> {
+  return get(`/chain?symbol=${encodeURIComponent(symbol)}`)
+}
+
+// ?? Refresh ???????????????????????????????????????????????
+export async function refreshSymbol(symbol: string): Promise<{
+  symbol: string
+  active_chain_source: string
+  contract_count: number
+  expirations: string[]
+}> {
+  return get(`/refresh/symbol?symbol=${encodeURIComponent(symbol)}`)
+}
+
+// ?? Scanner ???????????????????????????????????????????????
+export interface ScanParams {
+  symbol: string
+  total_risk: number
+  side: 'all' | 'call' | 'put'
+  expiration: string
+  sort_by: string
+  max_results: number
+}
+
+export async function fetchScan(params: ScanParams): Promise<{
+  symbol: string
+  count: number
+  items: ScanResult[]
+  active_chain_source: string
+}> {
+  const qs = new URLSearchParams({
+    symbol:      params.symbol,
+    total_risk:  String(params.total_risk),
+    side:        params.side,
+    expiration:  params.expiration,
+    sort_by:     params.sort_by,
+    max_results: String(params.max_results),
+  })
+  return get(`/scan/live?${qs}`)
+}
+
+// ?? Vol Surface ???????????????????????????????????????????
+export async function fetchVolSurface(
+  symbol: string,
+  maxExp     = 7,
+  strikeCount = 25,
+): Promise<VolSurfaceData> {
+  return get(
+    `/vol/surface?symbol=${encodeURIComponent(symbol)}&max_expirations=${maxExp}&strike_count=${strikeCount}`
+  )
+}
+
+// ?? Alerts ????????????????????????????????????????????????
+export async function sendPushover(title: string, message: string): Promise<void> {
+  await post('/alerts/pushover', { title, message, notify_whatsapp: false })
+}
+
+// ?? Health ????????????????????????????????????????????????
+export async function fetchHealth(): Promise<{
+  status: string
+  active_chain_source: string
+  dxlink_connected: boolean
+}> {
+  return get('/health')
+}
+
+// ?? Candles ???????????????????????????????????????????????
+export interface Candle {
+  time:   number   // Unix seconds
+  open:   number
+  high:   number
+  low:    number
+  close:  number
+  volume: number
+}
+
+export interface PriceHistory {
+  symbol:    string
+  period:    string
+  frequency: string
+  count:     number
+  candles:   Candle[]
+}
+
+// DXLink streaming candles first, chart/history REST fallback
+export async function fetchPriceHistory(
+  symbol: string,
+  period    = '20y',
+  frequency = 'daily',
+): Promise<PriceHistory> {
+  return get(
+    `/stream/candles?symbol=${encodeURIComponent(symbol)}&period=${period}`
+  )
+}
+
+'@
+WF "react-frontend\src\api\client.ts" $c
+
+$c = @'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import GridLayout, { type Layout } from 'react-grid-layout'
 import 'react-grid-layout/css/styles.css'
@@ -184,26 +352,15 @@ function TileWrapper({
   setFocusedTile: (id: string) => void
   onGearOpen: (id: string) => void
 }) {
-  const isFocused  = focusedTile === id
-  const [min, setMin] = useState(false)
+  const isFocused = focusedTile === id
 
   return (
     <div
       className={`tile${isFocused ? ' tile-focused' : ''}`}
-      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+      style={{ height: '100%' }}
       onMouseDown={() => setFocusedTile(id)}
     >
-      <div style={{ display: 'flex', alignItems: 'center', padding: '2px 6px', background: 'var(--bg2)', borderBottom: '1px solid var(--border)', flexShrink: 0, minHeight: 24 }}>
-        <span style={{ flex: 1 }} />
-        <button style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 11, padding: '0 3px', lineHeight: 1 }}
-          onClick={e => { e.stopPropagation(); setMin(v => !v) }} title={min ? 'Restore' : 'Minimize'}>
-          {min ? '?' : '?'}
-        </button>
-        <button className="tile-gear-btn" onClick={e => { e.stopPropagation(); onGearOpen(id) }} title="Panel settings">?</button>
-      </div>
-      <div style={{ flex: 1, display: min ? 'none' : 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
-        {children}
-      </div>
+      {children}
     </div>
   )
 }
@@ -455,4 +612,23 @@ export default function App() {
       {gearTile && <GearModal tileId={gearTile} onClose={() => setGearTile(null)} />}
     </div>
   )
+}
+
+'@
+WF "react-frontend\src\App.tsx" $c
+
+Write-Host "Building React..." -ForegroundColor Yellow
+$wslRoot = ($Root -replace 'C:\\\\', '/mnt/c/') -replace '\\\\', '/'
+wsl.exe bash -lc "cd '$wslRoot/react-frontend' && npm run build 2>&1 | tail -10"
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "" 
+    Write-Host "Build OK. Stack is now 100p tastytrade + DXLink:" -ForegroundColor Green
+    Write-Host "  /quote/live    <- DXLink streaming last/bid/ask/OHLC" -ForegroundColor Cyan
+    Write-Host "  /chain         <- tastytrade option chain structure" -ForegroundColor Cyan
+    Write-Host "  /stream/candles <- DXLink streaming OHLCV candles" -ForegroundColor Cyan
+    Write-Host "  /account/tasty <- tastytrade account + positions" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Refresh http://localhost:5500" -ForegroundColor Yellow
+} else {
+    Write-Host "Build errors above" -ForegroundColor Red
 }
